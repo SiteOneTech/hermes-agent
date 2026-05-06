@@ -1,0 +1,39 @@
+# Zeus / Sitio Uno GCP Hermes configuration fragment
+#
+# Merge these keys into ~/.hermes/config.yaml after installing Hermes.
+# Secrets are referenced through environment variables and must live in
+# ~/.hermes/.env or another local secret store, never in git.
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  provider: honcho
+  nudge_interval: 10
+  flush_min_turns: 6
+
+mcp_servers:
+  openclaw-office:
+    command: /home/hermes/.hermes/hermes-agent/venv/bin/python
+    args:
+      - /home/hermes/.hermes/openclaw-tools/openclaw_mcp_server.py
+    env:
+      OPENCLAW_FLEET_CONFIG: /home/hermes/.hermes/openclaw-tools/openclaw-fleet.yaml
+      OPENCLAW_SICILIA_DELEGATE_TOKEN: ${OPENCLAW_SICILIA_DELEGATE_TOKEN}
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    timeout: 660
+    connect_timeout: 60
+    enabled: true
+
+  mirofish:
+    command: /home/hermes/.hermes/hermes-agent/venv/bin/python
+    args:
+      - /home/hermes/.hermes/openclaw-tools/mirofish_mcp_server.py
+    env:
+      MIROFISH_BASE_URL: http://10.42.0.4
+      MIROFISH_ENABLE_EXPENSIVE_TOOLS: "1"
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    timeout: 660
+    connect_timeout: 60
+    enabled: true

@@ -1,0 +1,10 @@
+[Unit]
+Description=Backup Zeus Honcho memory locally
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hermes
+ExecStart=/home/hermes/.hermes/hermes-agent/venv/bin/python /home/hermes/.hermes/honcho-backup/backup_honcho.py
+
