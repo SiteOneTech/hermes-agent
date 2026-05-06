@@ -47,9 +47,66 @@ offices:
         role: worker
       plinio:
         role: worker
+      capablanca:
+        role: devops-runner-registry-cron
+      ana-pmo:
+        role: pmo-delivery-governor
+      leo-orquestador:
+        role: software-factory-coordinator
+      mia-producto:
+        role: product-strategist
+      nico-arquitecto:
+        role: software-architect
+      sofia-secdevops:
+        role: security-devops
+      dario-docs:
+        role: docs-knowledge
+      iris-ux:
+        role: ux-frontend-quality
+      rafa-cartografo:
+        role: codebase-cartographer
+      vera-research:
+        role: research-sources
+      tina-qa:
+        role: technical-qa
+      belen-browser:
+        role: browser-qa
+      clara-claude:
+        role: claude-worker
+      ciro-codex:
+        role: codex-worker
+      olga-openhands:
+        role: openhands-worker
+      bruno-integrador:
+        role: integration-reviewer
+      rene-release:
+        role: release-captain
+    services:
+      software_factory:
+        display_name: SitioUno Software Factory
+        status: active
+        delegate_via_office: sicilia
+        coordinator_agent_id: leo-orquestador
+        devops_agent_id: capablanca
+        openhands_agent_id: olga-openhands
+        repo: /media/jean/DATOS-SSD/sitiouno-software-factory-ai
+        canonical_repo: https://github.com/SiteOneTech/sitiouno-software-factory-ai
+        purpose: Planificar, implementar, validar y preparar entregables de software por agentes especializados.
+    capabilities:
+      - software_factory
+      - openhands_worker
+      - codex_worker
+      - claude_worker
+      - browser_qa
+      - technical_qa
+    repos:
+      software_factory: https://github.com/SiteOneTech/sitiouno-software-factory-ai
+      infra: https://github.com/sitiouno/gcloud-office
+      office_ui: https://github.com/sitiouno/openclaw-office
     notes:
       - Delegate receiver speaks POST /v1/delegate with Bearer auth.
       - Gateway and Office remain local to the Sicilia node.
+      - Software factory agents are delegated through the Sicilia receiver using office_id=sicilia.
 
   miami:
     display_name: Sucursal Miami

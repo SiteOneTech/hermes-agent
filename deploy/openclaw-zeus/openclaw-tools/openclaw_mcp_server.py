@@ -220,6 +220,9 @@ def _redacted_office(office_id: str, office: dict[str, Any], include_live: bool 
         "token_configured": bool(os.getenv(str(office.get("token_env") or ""))),
         "contract": office.get("contract"),
         "agents": office.get("agents") or {},
+        "services": office.get("services") or {},
+        "capabilities": office.get("capabilities") or [],
+        "repos": office.get("repos") or {},
         "notes": office.get("notes") or [],
     }
     if include_live:
