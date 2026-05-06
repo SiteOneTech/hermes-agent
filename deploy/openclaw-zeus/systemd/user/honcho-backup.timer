@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Zeus Honcho memory backup
+
+[Timer]
+OnCalendar=*-*-* 03:25:00
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,84 @@
+site:
+  id: sitiouno-gcp
+  display_name: SitioUno GCP
+  assistant_identity: Soy tu asistente IA dentro de la infraestructura de SitioUno GCP.
+  control_plane: hermes-agent-01
+  notes:
+    - Network reachability is not authority. Delegation requires an endpoint and token.
+    - LLM provider traffic remains local to each office node.
+
+offices:
+  hq:
+    display_name: OpenClaw HQ
+    kind: gcp-office
+    status: active
+    gcp_project: su-office-2030
+    gcp_zone: us-central1-a
+    gcp_instance: openclaw-gateway-01
+    gcp_internal_ip: 10.42.0.2
+    tailscale_host: openclaw-hq
+    tailscale_ip: 100.127.156.52
+    agents:
+      kaspar:
+        role: hq-orchestrator
+    notes:
+      - HQ reverse tunnel for Sicilia has historically listened on 127.0.0.1:18780 on the HQ VM.
+      - Hermes should prefer direct office delegation endpoints when available.
+
+  sicilia:
+    display_name: Sucursal Sicilia
+    kind: branch-office
+    status: active
+    tailscale_host: openclaw-sicilia
+    tailscale_ip: 100.115.198.70
+    delegate_endpoint: http://100.115.198.70:8780/v1/delegate
+    token_env: OPENCLAW_SICILIA_DELEGATE_TOKEN
+    contract: branch-delegation-v1
+    agents:
+      cesar:
+        role: branch-coordinator
+      seneca:
+        role: branch-advisor
+      aurelio:
+        role: worker
+      tacito:
+        role: worker
+      ovidio:
+        role: worker
+      plinio:
+        role: worker
+    notes:
+      - Delegate receiver speaks POST /v1/delegate with Bearer auth.
+      - Gateway and Office remain local to the Sicilia node.
+
+  miami:
+    display_name: Sucursal Miami
+    kind: branch-office
+    status: discovered
+    tailscale_host: openclaw-miami
+    tailscale_ip: 100.85.203.20
+    delegate_endpoint: http://100.85.203.20:8780/v1/delegate
+    token_env: OPENCLAW_MIAMI_DELEGATE_TOKEN
+    contract: branch-delegation-v1
+    agents: {}
+    notes:
+      - Tailnet node is visible. Delegation remains pending until agents and token are registered.
+
+  mirofish:
+    display_name: MiroFish AI Forecast Simulator
+    kind: simulator-service
+    status: active
+    gcp_project: su-office-2030
+    gcp_zone: us-central1-a
+    gcp_instance: mirofish-simulator-01
+    gcp_internal_ip: 10.42.0.4
+    tailscale_host: mirofish-simulator-01
+    tailscale_ip: 100.119.34.35
+    ui_url: http://100.119.34.35/
+    api_base_url: http://100.119.34.35/api
+    health_endpoint: http://100.119.34.35/health
+    agents: {}
+    notes:
+      - Private GCP route is active from Hermes/HQ on port 80.
+      - Browser Tailnet route is active at http://100.119.34.35/.
+      - ZEP_API_KEY is configured; Zep read/write smoke test passed from the VM.

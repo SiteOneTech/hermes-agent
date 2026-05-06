@@ -1,0 +1,54 @@
+{
+  "workspace": "sitio-uno-gcp",
+  "peerName": "jean",
+  "aiPeer": "zeus",
+  "environment": "production",
+  "enabled": true,
+  "saveMessages": true,
+  "writeFrequency": "async",
+  "recallMode": "hybrid",
+  "sessionStrategy": "per-session",
+  "contextTokens": 1600,
+  "dialecticReasoningLevel": "low",
+  "dialecticDynamic": true,
+  "dialecticMaxChars": 800,
+  "dialecticDepth": 1,
+  "reasoningHeuristic": true,
+  "reasoningLevelCap": "medium",
+  "messageMaxChars": 25000,
+  "dialecticMaxInputChars": 10000,
+  "observationMode": "directional",
+  "hosts": {
+    "hermes": {
+      "enabled": true,
+      "workspace": "sitio-uno-gcp",
+      "peerName": "jean",
+      "aiPeer": "zeus",
+      "pinPeerName": true,
+      "saveMessages": true,
+      "writeFrequency": "async",
+      "recallMode": "hybrid",
+      "sessionStrategy": "per-session",
+      "contextTokens": 1600,
+      "dialecticReasoningLevel": "low",
+      "dialecticDynamic": true,
+      "dialecticMaxChars": 800,
+      "dialecticDepth": 1,
+      "reasoningHeuristic": true,
+      "reasoningLevelCap": "medium",
+      "messageMaxChars": 25000,
+      "dialecticMaxInputChars": 10000,
+      "observationMode": "directional",
+      "observation": {
+        "user": {
+          "observeMe": true,
+          "observeOthers": true
+        },
+        "ai": {
+          "observeMe": true,
+          "observeOthers": true
+        }
+      }
+    }
+  }
+}
