@@ -14,6 +14,7 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import subprocess
 import time
 import urllib.error
@@ -34,6 +35,7 @@ from mcp.server.fastmcp import FastMCP
 
 DEFAULT_CONFIG = Path.home() / ".hermes" / "openclaw-tools" / "openclaw-fleet.yaml"
 DEFAULT_NOTION_STATE = Path.home() / ".hermes" / "openclaw-tools" / "notion-state.json"
+DEFAULT_ZEUS_KANBAN_DB = Path.home() / ".hermes" / "kanban.db"
 MAX_DEADLINE_S = 600
 DEFAULT_TIMEOUT_S = 8
 DEFAULT_REGISTRY_API_URL = "http://openclaw-hq:8781"
@@ -120,6 +122,62 @@ def _factory_project_id(title: str, project_slug: str = "", project_id: str = ""
     pid = _slugify(project_id, fallback="") if project_id else f"factory-{slug}-001"
     repo_name = f"factory-su-{slug}"
     return pid, slug, repo_name
+
+
+def _zeus_kanban_upsert(
+    *,
+    task_id: str,
+    title: str,
+    body: str,
+    status: str,
+    priority: int,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    db_path = Path(_env("HERMES_KANBAN_DB", str(DEFAULT_ZEUS_KANBAN_DB))).expanduser()
+    if not db_path.exists():
+        return {"ok": False, "error": f"Zeus kanban db not found: {db_path}", "db_path": str(db_path)}
+    now = int(time.time())
+    payload = json.dumps(result, ensure_ascii=True, sort_keys=True)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO tasks(
+                  id, title, body, assignee, status, priority, created_by,
+                  created_at, workspace_kind, result, idempotency_key, tenant
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  title = excluded.title,
+                  body = excluded.body,
+                  assignee = excluded.assignee,
+                  status = excluded.status,
+                  priority = excluded.priority,
+                  result = excluded.result
+                """,
+                (
+                    task_id,
+                    title[:240],
+                    body[:4000],
+                    "Zeus",
+                    status,
+                    int(priority),
+                    "openclaw_factory_project_request",
+                    now,
+                    "scratch",
+                    payload,
+                    task_id,
+                    "default",
+                ),
+            )
+            conn.execute(
+                "INSERT INTO task_events(task_id, run_id, kind, payload, created_at) VALUES(?, ?, ?, ?, ?)",
+                (task_id, None, "factory_project_tracking_updated", payload, now),
+            )
+            conn.commit()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "db_path": str(db_path)}
+    return {"ok": True, "task_id": task_id, "status": status, "db_path": str(db_path)}
 
 
 def _load_config() -> dict[str, Any]:
@@ -1258,6 +1316,7 @@ def openclaw_factory_project_request(
             "preview_url_expected": preview_url,
             "kanban_project_task": project_task,
             "kanban_stage_tasks": stage_tasks,
+            "zeus_kanban_task_id": f"zeus-{pid}",
             "delegation_task_spec": task_spec,
         }
 
@@ -1296,6 +1355,26 @@ def openclaw_factory_project_request(
         status="submitted",
         preview_url=preview_url,
     )
+    zeus_kanban = _zeus_kanban_upsert(
+        task_id=f"zeus-{pid}",
+        title=f"Factory {title}",
+        body=(
+            f"Strategic oversight for Factory project {pid}. "
+            f"Branch: sicilia. Expected repo: {repo_name}. Expected preview: {preview_url}. "
+            "Zeus tracks intent, blockers, acceptance, and Jean-level decisions here; "
+            "Sicilia branch Kanban remains operational truth."
+        ),
+        status="running",
+        priority=2 if complexity in {"standard", "complex"} else 3,
+        result={
+            "project_id": pid,
+            "branch": "sicilia",
+            "repo_name": repo_name,
+            "preview_url_expected": preview_url,
+            "canonical_factory_project": True,
+            "branch_kanban_project_id": pid,
+        },
+    )
     delegation = openclaw_delegate_task(
         office_id="sicilia",
         agent_id="leo-orquestador",
@@ -1316,6 +1395,7 @@ def openclaw_factory_project_request(
         "kanban_created": True,
         "kanban_results_count": len(kanban_results),
         "notion_event": notion_event,
+        "zeus_kanban": zeus_kanban,
         "delegation": delegation,
         "next_poll": {
             "tool": "openclaw_delegation_status",
