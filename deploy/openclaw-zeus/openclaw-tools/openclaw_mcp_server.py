@@ -10,6 +10,7 @@ The server is intentionally small and conservative:
 from __future__ import annotations
 
 import argparse
+import smtplib
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import urllib.error
 import urllib.request
 import uuid
 from copy import deepcopy
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urljoin
@@ -734,6 +736,75 @@ def _notion_create_page(
     }
 
 
+def _notion_append_children(block_id: str, children: list[dict[str, Any]]) -> dict[str, Any]:
+    if not block_id:
+        return {"ok": False, "error": "block_id is required"}
+    if not children:
+        return {"ok": True, "status": "no_children"}
+    result = _notion_request("PATCH", f"blocks/{block_id}/children", {"children": children[:100]})
+    if not result.get("ok"):
+        return result
+    return {
+        "ok": True,
+        "block_id": block_id,
+        "duration_s": result.get("duration_s"),
+    }
+
+
+def _notion_children(parent_id: str, page_size: int = 100) -> dict[str, Any]:
+    if not parent_id:
+        return {"ok": False, "error": "parent_id is required"}
+    return _notion_request("GET", f"blocks/{parent_id}/children?page_size={max(1, min(page_size, 100))}")
+
+
+def _notion_child_page_by_title(parent_id: str, title: str) -> dict[str, Any] | None:
+    result = _notion_children(parent_id)
+    if not result.get("ok"):
+        return None
+    body = result.get("body_json") if isinstance(result.get("body_json"), dict) else {}
+    wanted = str(title or "").strip()
+    for block in body.get("results") or []:
+        if not isinstance(block, dict) or block.get("type") != "child_page":
+            continue
+        child = block.get("child_page") if isinstance(block.get("child_page"), dict) else {}
+        if str(child.get("title") or "").strip() == wanted:
+            return {
+                "ok": True,
+                "id": block.get("id"),
+                "title": wanted,
+            }
+    return None
+
+
+def _notion_ensure_page(parent_id: str, title: str, children: list[dict[str, Any]]) -> dict[str, Any]:
+    existing = _notion_child_page_by_title(parent_id, title)
+    if existing:
+        return {**existing, "created": False}
+    created = _notion_create_page(parent_id, title, children)
+    return {**created, "created": bool(created.get("ok"))}
+
+
+def _notion_section_id(state: dict[str, Any], section_name: str) -> str:
+    section = (state.get("sections") or {}).get(section_name) or {}
+    return str(section.get("id") or "").strip()
+
+
+def _duration_text(duration_s: int | float | str | None) -> str:
+    try:
+        total = max(0, int(float(duration_s or 0)))
+    except Exception:
+        total = 0
+    hours, rem = divmod(total, 3600)
+    minutes, seconds = divmod(rem, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    parts.append(f"{seconds}s")
+    return " ".join(parts)
+
+
 def _notion_board_page_id(explicit_page_id: str = "") -> str:
     state = _load_notion_state()
     return (
@@ -1250,6 +1321,309 @@ def openclaw_notion_log_event(
 
 
 @mcp.tool()
+def openclaw_notion_create_factory_project_record(
+    project_id: str,
+    title: str,
+    preview_url: str,
+    repo_url: str,
+    status: str = "pending_zeus_acceptance",
+    branch_task_id: str = "",
+    zeus_task_id: str = "",
+    sprint_name: str = "Sprint 01 - Delivery",
+    stage_summary: str = "",
+    engine_summary: str = "",
+    qa_summary: str = "",
+    security_summary: str = "",
+    release_summary: str = "",
+    retrospective_summary: str = "",
+    duration_seconds: int = 0,
+    started_at: str = "",
+    completed_at: str = "",
+    decision_summary: str = "",
+) -> dict[str, Any]:
+    """Create a standardized Factory project mirror in the SitioUno Notion board.
+
+    This is the canonical Notion template for Factory projects. It writes the
+    same structure used by FACTORY-WEB-001: a project page under Projects,
+    child pages for sprint/stages/execution/QA/release/retro, and board mirror
+    pages under Sprints, Tasks, Deliverables, QA, Retrospectives, and Decisions.
+    """
+    project_id = _slugify(project_id, fallback="factory-project")
+    title = str(title or "").strip()
+    preview_url = str(preview_url or "").strip()
+    repo_url = str(repo_url or "").strip()
+    if not project_id or not title:
+        return {"ok": False, "error": "project_id and title are required"}
+    state = _load_notion_state()
+    required_sections = {
+        "Projects": _notion_section_id(state, "Projects"),
+        "Sprints": _notion_section_id(state, "Sprints"),
+        "Tasks and Delegations": _notion_section_id(state, "Tasks and Delegations"),
+        "Deliverables and Previews": _notion_section_id(state, "Deliverables and Previews"),
+        "QA and Evidence": _notion_section_id(state, "QA and Evidence"),
+        "Retrospectives": _notion_section_id(state, "Retrospectives"),
+        "Decisions": _notion_section_id(state, "Decisions"),
+    }
+    missing = [name for name, page_id in required_sections.items() if not page_id]
+    if missing:
+        return {
+            "ok": False,
+            "error": "Notion board structure is missing required sections",
+            "missing_sections": missing,
+            "fix": "Run openclaw_notion_create_structure first.",
+            "state_path": str(_notion_state_path()),
+        }
+
+    project_title = f"{project_id.upper()} - {title}"
+    duration = _duration_text(duration_seconds)
+    stage_items = [
+        "IDEA: idea_brief.md",
+        "DISCOVERY: research_dossier.md",
+        "PRODUCT_SHAPING: prd.md",
+        "ARCHITECTURE_REVIEW: architecture_brief.md",
+        "READY_FOR_SPRINT: sprint_plan.md",
+        "EXECUTION: execution_trace.md",
+        "CODE_REVIEW: code_review.md",
+        "QA_VALIDATION: qa_validation.md and browser_qa_playwright.md",
+        "SECURITY_REVIEW: security_review.md",
+        "ZEUS_ACCEPTANCE: zeus_acceptance.md",
+        "RELEASE: release_handoff.md",
+        "RETROSPECTIVE: retrospective.md",
+        "MEMORY_UPDATE: memory_update.md",
+    ]
+    project_page = _notion_ensure_page(
+        required_sections["Projects"],
+        project_title,
+        [
+            _notion_paragraph(f"Status: {status}."),
+            _notion_heading("Executive Summary"),
+            _notion_paragraph(stage_summary or "Factory project record created from the canonical Zeus -> Factory template."),
+            _notion_heading("Public URLs"),
+            *_notion_bullets(
+                [
+                    f"Preview: {preview_url}" if preview_url else "",
+                    f"Repository: {repo_url}" if repo_url else "",
+                ]
+            ),
+            _notion_heading("Metrics"),
+            *_notion_bullets(
+                [
+                    f"Started at UTC: {started_at}" if started_at else "",
+                    f"Completed at UTC: {completed_at}" if completed_at else "",
+                    f"Cycle time: {duration} ({int(duration_seconds or 0)} seconds)" if duration_seconds else "",
+                    f"Branch Kanban task: {branch_task_id}" if branch_task_id else "",
+                    f"Zeus Kanban task: {zeus_task_id}" if zeus_task_id else "",
+                ]
+            ),
+        ],
+    )
+    if not project_page.get("ok"):
+        return project_page
+    project_page_id = str(project_page.get("id") or "")
+
+    child_specs = {
+        sprint_name: [
+            _notion_paragraph(f"Sprint goal and delivery scope for {project_title}."),
+            _notion_heading("Definition Of Done"),
+            *_notion_bullets(
+                [
+                    "Repo exists and is private.",
+                    "Preview Lab URL is published when the deliverable is user-facing.",
+                    "QA and security gates have explicit evidence.",
+                    "Zeus Acceptance is recorded as accepted, changes_requested, or escalated.",
+                ]
+            ),
+        ],
+        "Stage Gate Board - IDEA to MEMORY_UPDATE": [
+            _notion_paragraph("Standard Factory state-machine trace."),
+            _notion_heading("Stages"),
+            *_notion_bullets(stage_items),
+        ],
+        "Execution Trace - Engine and Worker Usage": [
+            _notion_paragraph(engine_summary or "Engine/worker evidence must name Codex, Claude Code, OpenHands, or other executor."),
+            _notion_heading("Timing"),
+            *_notion_bullets(
+                [
+                    f"Started at UTC: {started_at}" if started_at else "",
+                    f"Completed at UTC: {completed_at}" if completed_at else "",
+                    f"Cycle time: {duration} ({int(duration_seconds or 0)} seconds)" if duration_seconds else "",
+                ]
+            ),
+        ],
+        "QA Evidence and Release": [
+            _notion_heading("QA"),
+            _notion_paragraph(qa_summary or "QA summary pending."),
+            _notion_heading("Security"),
+            _notion_paragraph(security_summary or "Security summary pending."),
+            _notion_heading("Release"),
+            _notion_paragraph(release_summary or "Release summary pending."),
+            *_notion_bullets([preview_url, repo_url]),
+        ],
+        "Retrospective and Memory Update": [
+            _notion_paragraph(retrospective_summary or "Retrospective pending."),
+            _notion_heading("Memory Candidate"),
+            _notion_paragraph("Persist durable routing truth, lessons, and process changes. Do not store secrets."),
+        ],
+    }
+    project_children = {
+        name: _notion_ensure_page(project_page_id, name, children)
+        for name, children in child_specs.items()
+    }
+
+    board_pages = {
+        "sprint": _notion_ensure_page(
+            required_sections["Sprints"],
+            f"{project_id.upper()} / {sprint_name}",
+            [
+                _notion_paragraph(f"Project: {project_title}"),
+                _notion_paragraph(f"Status: {status}"),
+                _notion_paragraph(f"Project page: {project_page.get('url') or project_page_id}"),
+            ],
+        ),
+        "tasks": _notion_ensure_page(
+            required_sections["Tasks and Delegations"],
+            f"{project_id.upper()} - Stage Tasks and Delegation Trace",
+            [
+                _notion_paragraph(f"Branch Kanban task: {branch_task_id or project_id}"),
+                _notion_paragraph(f"Zeus Kanban task: {zeus_task_id or 'pending'}"),
+                *_notion_bullets(stage_items),
+            ],
+        ),
+        "deliverable": _notion_ensure_page(
+            required_sections["Deliverables and Previews"],
+            f"{project_id.upper()} - Public Preview Deliverable",
+            [
+                _notion_heading("Preview"),
+                _notion_paragraph(preview_url or "No public preview URL recorded."),
+                _notion_heading("Repository"),
+                _notion_paragraph(repo_url or "No repository URL recorded."),
+            ],
+        ),
+        "qa": _notion_ensure_page(
+            required_sections["QA and Evidence"],
+            f"{project_id.upper()} - QA Evidence",
+            [_notion_paragraph(qa_summary or "QA summary pending.")],
+        ),
+        "retro": _notion_ensure_page(
+            required_sections["Retrospectives"],
+            f"{project_id.upper()} - Retrospective",
+            [_notion_paragraph(retrospective_summary or "Retrospective pending.")],
+        ),
+    }
+    if decision_summary:
+        board_pages["decision"] = _notion_ensure_page(
+            required_sections["Decisions"],
+            f"DECISION - {project_id.upper()} Acceptance",
+            [_notion_paragraph(decision_summary)],
+        )
+
+    return {
+        "ok": bool(project_page.get("ok")),
+        "template": "factory_project_standard_v1",
+        "project": project_page,
+        "project_children": project_children,
+        "board_pages": board_pages,
+        "metrics": {
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "duration_seconds": int(duration_seconds or 0),
+            "duration_human": duration if duration_seconds else "",
+        },
+    }
+
+
+@mcp.tool()
+def openclaw_factory_completion_notify(
+    project_id: str,
+    title: str,
+    preview_url: str,
+    repo_url: str = "",
+    notion_url: str = "",
+    status: str = "completed",
+    duration_seconds: int = 0,
+    recipient: str = "",
+    summary: str = "",
+    next_decision: str = "",
+) -> dict[str, Any]:
+    """Email Jean a concise Factory completion report using Zeus' configured mailbox."""
+    sender = _env("EMAIL_ADDRESS")
+    password = _env("EMAIL_PASSWORD")
+    smtp_host = _env("EMAIL_SMTP_HOST", "smtp.gmail.com")
+    try:
+        smtp_port = int(_env("EMAIL_SMTP_PORT", "587") or "587")
+    except ValueError:
+        smtp_port = 587
+    recipient = str(recipient or "").strip() or _env("FACTORY_COMPLETION_NOTIFY_TO") or _env("EMAIL_HOME_ADDRESS")
+    if not sender or not password or not recipient:
+        return {
+            "ok": False,
+            "error": "missing EMAIL_ADDRESS, EMAIL_PASSWORD, or recipient/EMAIL_HOME_ADDRESS",
+            "sender_configured": bool(sender),
+            "recipient_configured": bool(recipient),
+        }
+
+    project_id = str(project_id or "").strip()
+    title = str(title or project_id or "Factory project").strip()
+    status = str(status or "completed").strip()
+    duration_line = (
+        f"Duracion del ciclo: {_duration_text(duration_seconds)} ({int(duration_seconds)} segundos)\n"
+        if duration_seconds
+        else ""
+    )
+    body = "\n".join(
+        line
+        for line in [
+            f"Jean, Zeus informa cierre de trabajo Factory: {title}",
+            "",
+            f"Proyecto: {project_id}" if project_id else "",
+            f"Estado: {status}",
+            duration_line.strip(),
+            f"Preview: {preview_url}" if preview_url else "",
+            f"Repo: {repo_url}" if repo_url else "",
+            f"Notion: {notion_url}" if notion_url else "",
+            "",
+            "Resumen:",
+            summary or "Trabajo Factory cerrado y listo para revision.",
+            "",
+            f"Siguiente decision: {next_decision}" if next_decision else "",
+            "",
+            "Enviado automaticamente por Zeus desde la infraestructura Sitio Uno GCP.",
+        ]
+        if line
+    )
+    msg = EmailMessage()
+    msg["From"] = f"Zeus <{sender}>"
+    msg["To"] = recipient
+    msg["Subject"] = f"[Zeus/Factory] {title} - {status}"
+    msg.set_content(body)
+
+    started = time.monotonic()
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+            server.starttls()
+            server.login(sender, password)
+            server.send_message(msg)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "recipient": recipient,
+            "smtp_host": smtp_host,
+            "duration_s": round(time.monotonic() - started, 3),
+        }
+
+    return {
+        "ok": True,
+        "recipient": recipient,
+        "sender": sender,
+        "subject": msg["Subject"],
+        "duration_s": round(time.monotonic() - started, 3),
+        "project_id": project_id,
+        "preview_url": preview_url,
+    }
+
+
+@mcp.tool()
 def openclaw_notion_runbook() -> dict[str, Any]:
     """Explain how Zeus should use Notion as Jean's human-readable operating mirror."""
     return {
@@ -1325,6 +1699,8 @@ def openclaw_factory_project_request(
         "repo_visibility": "private",
         "preview_url_expected": preview_url,
         "notion_required": True,
+        "notion_template": "factory_project_standard_v1",
+        "completion_email_required": True,
         "playwright_required": True,
         "footer_credit_required": "desarrollado por: SitioUno Factory",
         "complexity": complexity,
@@ -1387,8 +1763,11 @@ def openclaw_factory_project_request(
             "5. Produce project docs/evidence: PRD, architecture brief, sprint plan, execution log, code review, QA report, Browser QA/Playwright report, security review, release handoff, retrospective, metrics.",
             "6. Publish user-facing work to the KIDU Preview Lab unless Zeus/Jean explicitly says not to publish.",
             "7. Record Notion human-readable evidence through Zeus or the approved writer.",
-            "8. If any QA/security/release gate fails, mark REGATE_REQUIRED and do not present the work as accepted.",
-            "9. Report progress asynchronously; Zeus will poll branch Kanban and delegation status.",
+            "8. Notion must use the standard Factory project template: Project page under Projects, child pages for Sprint, Stage Gate Board, Execution Trace, QA Evidence and Release, Retrospective and Memory, plus board mirror pages.",
+            "9. Metrics must record started_at, completed_at, total duration, duration by state when available, engine attempts, QA result, Playwright result, re-gate count, and preview deploy time.",
+            "10. When the work is complete enough for Jean review, Zeus must send Jean an email completion report with status, preview URL, repo URL, Notion URL, duration, and next decision.",
+            "11. If any QA/security/release gate fails, mark REGATE_REQUIRED and do not present the work as accepted.",
+            "12. Report progress asynchronously; Zeus will poll branch Kanban and delegation status.",
         ]
     )
 

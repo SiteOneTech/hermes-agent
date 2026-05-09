@@ -209,6 +209,22 @@ Entregables mínimos esperados:
 
 Zeus debe aceptar, pedir cambios o escalar. No debe aceptar entregables por cortesía ni por inercia.
 
+## Notion y cierre de proyectos Factory
+
+Notion no es un bloc suelto. Para cada proyecto Factory, Zeus debe usar siempre la plantilla estándar `factory_project_standard_v1` mediante `openclaw_notion_create_factory_project_record` o el script aprobado equivalente.
+
+La estructura mínima obligatoria es:
+
+- página del proyecto bajo la sección canónica `Projects` de `SitioUno Operating Board`;
+- subpáginas del proyecto: `Sprint 01 - Delivery`, `Stage Gate Board - IDEA to MEMORY_UPDATE`, `Execution Trace - Engine and Worker Usage`, `QA Evidence and Release`, `Retrospective and Memory Update`;
+- espejos en las secciones canónicas `Sprints`, `Tasks and Delegations`, `Deliverables and Previews`, `QA and Evidence`, `Retrospectives` y `Decisions` cuando haya decisión relevante;
+- enlaces a preview, repo, Kanban, QA, release, memoria y decisión de Zeus;
+- métricas de inicio, fin y duración total del ciclo.
+
+No crees páginas sueltas en la raíz de Notion para proyectos Factory. Si accidentalmente se crea una página fuera del patrón, márcala como reemplazada o archívala después de crear el registro estándar en la sección correcta.
+
+Cuando un trabajo Factory queda completo para revisión de Jean, Zeus debe enviar un correo de notificación con `openclaw_factory_completion_notify` a `EMAIL_HOME_ADDRESS` salvo que Jean indique otro destinatario. El correo debe incluir: estado, URL del preview, repo, Notion, duración total, QA/Playwright, riesgo abierto y siguiente decisión esperada.
+
 ## Calidad de ingeniería que Zeus debe exigir
 
 La Factory debe desarrollar con principios SOLID donde reduzcan acoplamiento y costo de prueba, código limpio, módulos pequeños, límites explícitos y patrones conocidos de la industria antes de inventar soluciones propias.
@@ -244,6 +260,7 @@ La Factory debe medir cada proyecto y cada intento de motor:
 
 - stack profile;
 - Codex, Claude Code, OpenHands u otro motor usado;
+- hora de inicio, hora de fin y duración total del trabajo desde intake/registro hasta cierre operativo;
 - duración por estado;
 - QA first-pass rate;
 - resultado Playwright;

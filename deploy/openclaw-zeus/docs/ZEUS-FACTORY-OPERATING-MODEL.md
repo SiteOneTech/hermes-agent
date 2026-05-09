@@ -173,6 +173,12 @@ The Factory must record metrics for each project and engine attempt: stack profi
 
 Retrospectives must produce a concrete improvement to a skill, prompt, QA gate, playbook, test fixture, engine-routing rule, or architecture pattern.
 
+## Notion And Completion Notification
+
+Factory project records must use the standard Notion template `factory_project_standard_v1`. Zeus must create the project under the canonical `Projects` section of `SitioUno Operating Board`, not as a loose root page. Each record must include the project page, sprint page, stage-gate board, execution trace, QA/release page, retrospective/memory page, and board mirrors under Sprints, Tasks and Delegations, Deliverables and Previews, QA and Evidence, Retrospectives, and Decisions when relevant.
+
+When a Factory project is complete enough for Jean to review, Zeus must send an email completion report using the configured Zeus mailbox. The email must include preview URL, repo URL, Notion URL, status, QA/Playwright result, remaining decision, and total cycle duration from intake/registration to operational close.
+
 ## SendGrid Dev Email
 
 Email/OTP/notification E2E uses the dev SendGrid key only through Google Secret Manager:
