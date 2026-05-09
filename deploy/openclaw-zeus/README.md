@@ -9,6 +9,7 @@ installation is complete.
 ## Layout
 
 - `SOUL.md` - Zeus identity/persona.
+- `docs/ZEUS-FACTORY-OPERATING-MODEL.md` - Zeus operating model for strategic delegation to the Sitio Uno Software Factory.
 - `honcho.json` - Honcho memory configuration without API keys.
 - `config/config.yaml.fragment.example` - config fragment for memory and MCP servers.
 - `openclaw-tools/` - OpenClaw fleet MCP and MiroFish MCP wrappers.
@@ -41,6 +42,17 @@ OPENCLAW_SICILIA_DELEGATE_TOKEN=...
 MIROFISH_ENABLE_EXPENSIVE_TOOLS=1
 ```
 
+Do not store the Factory SendGrid dev API key in Hermes files or `.env`.
+Zeus should only reference the Google Secret Manager secret id
+`factory-sendgrid-dev-api-key` in project `su-office-2030`; the Factory runner
+reads it through approved service-account access when an email/OTP E2E test
+requires it.
+
+Zeus should use `openclaw_branch_report(<office_id>)` to read each branch
+`GET /v1/delegate` report. The report's `kanban` block feeds Zeus' Hermes
+Kanban for strategic oversight while the branch keeps its own local operational
+board.
+
 Then reload user systemd:
 
 ```bash
@@ -57,4 +69,3 @@ hermes memory status
 systemctl --user status hermes-gateway.service
 systemctl --user status honcho-backup.timer
 ```
-
