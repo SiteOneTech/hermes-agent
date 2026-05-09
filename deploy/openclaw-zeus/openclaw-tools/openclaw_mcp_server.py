@@ -117,9 +117,45 @@ def _slugify(value: str, fallback: str = "project") -> str:
     return (text or fallback)[:64].strip("-") or fallback
 
 
+def _collapse_repeated_numeric_suffix(value: str) -> str:
+    collapsed = str(value or "").strip("-")
+    while re.search(r"-(\d+)-\1$", collapsed):
+        collapsed = re.sub(r"-(\d+)-\1$", r"-\1", collapsed)
+    return collapsed
+
+
+def _canonical_factory_slug(value: str, fallback: str = "factory-project") -> str:
+    slug = _slugify(value, fallback=fallback)
+    slug = _collapse_repeated_numeric_suffix(slug)
+    for prefix in ("factory-su-", "factory-"):
+        if slug.startswith(prefix):
+            slug = slug[len(prefix) :]
+            break
+    slug = re.sub(r"-0*\d+$", "", slug).strip("-") or fallback
+    # Known production alias: Jean used both forms while testing the same project.
+    if "pagoda" in slug and "ccs" in slug:
+        return "la-pagoda-ccs"
+    return slug
+
+
+def _canonical_factory_pid(project_id: str, slug: str) -> str:
+    explicit = _slugify(project_id, fallback="")
+    if not explicit:
+        return f"factory-{slug}-001"
+    explicit = _collapse_repeated_numeric_suffix(explicit)
+    if explicit.startswith("factory-su-"):
+        explicit = f"factory-{explicit[len('factory-su-') :]}"
+    elif not explicit.startswith("factory-"):
+        explicit = f"factory-{_canonical_factory_slug(explicit)}-001"
+    if "pagoda" in explicit and "ccs" in explicit:
+        return "factory-la-pagoda-ccs-001"
+    return explicit
+
+
 def _factory_project_id(title: str, project_slug: str = "", project_id: str = "") -> tuple[str, str, str]:
-    slug = _slugify(project_slug or title, fallback="factory-project")
-    pid = _slugify(project_id, fallback="") if project_id else f"factory-{slug}-001"
+    slug_source = project_id or project_slug or title
+    slug = _canonical_factory_slug(slug_source, fallback="factory-project")
+    pid = _canonical_factory_pid(project_id, slug)
     repo_name = f"factory-su-{slug}"
     return pid, slug, repo_name
 
@@ -926,6 +962,51 @@ def _branch_kanban_write(office_id: str, path: str, payload: dict[str, Any]) -> 
     }
 
 
+def _branch_kanban_read(office_id: str, path: str = "/v1/kanban") -> dict[str, Any]:
+    office_id = str(office_id or "").strip().lower()
+    office, err = _office_or_error(office_id)
+    if err:
+        return err
+    assert office is not None
+    endpoint = str(office.get("delegate_endpoint") or "").strip()
+    token_env = str(office.get("token_env") or "").strip()
+    token = _env(token_env) if token_env else ""
+    if not endpoint:
+        return {"ok": False, "error": f"office '{office_id}' has no delegate_endpoint"}
+    if not token:
+        return {"ok": False, "error": f"missing delegation token env {token_env}", "token_env": token_env}
+    base = endpoint.rsplit("/v1/delegate", 1)[0].rstrip("/")
+    url = f"{base}/{path.lstrip('/')}"
+    result = _http_json_request("GET", url, bearer_token=token, timeout_s=10.0)
+    return {
+        "ok": bool(result.get("ok")),
+        "office_id": office_id,
+        "endpoint": url,
+        "http_status": result.get("status"),
+        "result": result.get("body_json"),
+        "error": result.get("error"),
+    }
+
+
+def _kanban_snapshot_task_ids(snapshot: Any) -> set[str]:
+    task_ids: set[str] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key in ("id", "task_id"):
+                raw = value.get(key)
+                if isinstance(raw, str) and raw:
+                    task_ids.add(raw)
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(snapshot)
+    return task_ids
+
+
 @mcp.tool()
 def openclaw_openhands_status() -> dict[str, Any]:
     """Inspect the private OpenHands runner and explain the approved routing model."""
@@ -1235,6 +1316,11 @@ def openclaw_factory_project_request(
         "source": "zeus_factory_project_request",
         "project_id": pid,
         "project_slug": slug,
+        "normalized_from": {
+            "title": title,
+            "project_slug": project_slug,
+            "project_id": project_id,
+        },
         "repo_name": repo_name,
         "repo_visibility": "private",
         "preview_url_expected": preview_url,
@@ -1320,22 +1406,42 @@ def openclaw_factory_project_request(
             "delegation_task_spec": task_spec,
         }
 
-    kanban_results = [_branch_kanban_write("sicilia", "/v1/kanban/tasks", project_task)]
+    kanban_snapshot = _branch_kanban_read("sicilia", "/v1/kanban")
+    if not kanban_snapshot.get("ok"):
+        return {
+            "ok": False,
+            "error": "branch Kanban snapshot failed; refusing to delegate untracked Factory work",
+            "project_id": pid,
+            "project_slug": slug,
+            "snapshot": kanban_snapshot,
+        }
+    existing_task_ids = _kanban_snapshot_task_ids(kanban_snapshot.get("result"))
+    kanban_results = []
+    if pid not in existing_task_ids:
+        kanban_results.append(_branch_kanban_write("sicilia", "/v1/kanban/tasks", project_task))
     for stage_task in stage_tasks:
+        if stage_task["id"] in existing_task_ids:
+            continue
         kanban_results.append(_branch_kanban_write("sicilia", "/v1/kanban/tasks", stage_task))
+    lifecycle_event = {
+        "event_type": "factory_project_resumed" if pid in existing_task_ids else "factory_project_submitted",
+        "task_id": pid,
+        "branch": "sicilia",
+        "agent_id": "leo-orquestador" if pid not in existing_task_ids else "zeus",
+        "message": (
+            f"Zeus resumed canonical Factory project: {title}"
+            if pid in existing_task_ids
+            else f"Zeus submitted canonical Factory project: {title}"
+        ),
+        "metadata": metadata,
+    }
+    if pid not in existing_task_ids:
+        lifecycle_event["status"] = "claimed"
     kanban_results.append(
         _branch_kanban_write(
             "sicilia",
             "/v1/kanban/events",
-            {
-                "event_type": "factory_project_submitted",
-                "task_id": pid,
-                "branch": "sicilia",
-                "agent_id": "leo-orquestador",
-                "message": f"Zeus submitted canonical Factory project: {title}",
-                "status": "claimed",
-                "metadata": metadata,
-            },
+            lifecycle_event,
         )
     )
     failed_writes = [item for item in kanban_results if not item.get("ok")]
@@ -1393,6 +1499,8 @@ def openclaw_factory_project_request(
         "repo_name": repo_name,
         "preview_url_expected": preview_url,
         "kanban_created": True,
+        "kanban_resumed_existing": pid in existing_task_ids,
+        "kanban_snapshot_task_count": len(existing_task_ids),
         "kanban_results_count": len(kanban_results),
         "notion_event": notion_event,
         "zeus_kanban": zeus_kanban,
