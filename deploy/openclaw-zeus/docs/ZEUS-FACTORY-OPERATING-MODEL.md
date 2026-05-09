@@ -34,6 +34,8 @@ This inventory is operational guidance as of 2026-05-07 and should be verified w
 
 Zeus should use `openclaw_identity`, `openclaw_list_offices`, `openclaw_office_status`, and `openclaw_delegate_task` when discussing offices, agents, Factory, Sicilia, or cross-node delegation. A raw GET returning HTTP 501 on `/v1/delegate` is not a service failure; that endpoint is POST-only and should be tested through `openclaw_delegate_task`.
 
+For software delivery work, Zeus should prefer `openclaw_factory_project_request` over generic delegation. That tool creates the Sicilia branch Kanban project and canonical stage tasks before delegating async to `leo-orquestador`. Use it for landing pages, websites, apps, backends, integrations, UI work, public previews, repos, QA-driven delivery, and product prototypes.
+
 ## Zeus Intake Pattern
 
 Before sending work to the Factory, Zeus should:
@@ -101,6 +103,13 @@ Runtime rule:
 2. Read `report.kanban` from the branch `GET /v1/delegate` response.
 3. Use the branch summary to update or reason over Zeus' strategic Kanban.
 4. Treat branch Kanban as local execution truth and Zeus Kanban as portfolio/decision truth.
+
+For new Factory projects, the first operational write must happen before delegation:
+
+1. Create the branch project card with `project_id`.
+2. Create stage cards for IDEA, DISCOVERY, PRODUCT_SHAPING, ARCHITECTURE_REVIEW, READY_FOR_SPRINT, EXECUTION, CODE_REVIEW, QA_VALIDATION, SECURITY_REVIEW, ZEUS_ACCEPTANCE, RELEASE, RETROSPECTIVE, and MEMORY_UPDATE.
+3. Delegate to `leo-orquestador` asynchronously with that `project_id`.
+4. Poll `openclaw_delegation_status` and `openclaw_branch_report` instead of waiting inside the chat turn.
 5. If both differ, refresh the branch report before making claims.
 
 ## OpenHands Position

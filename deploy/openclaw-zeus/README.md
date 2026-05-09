@@ -53,6 +53,11 @@ Zeus should use `openclaw_branch_report(<office_id>)` to read each branch
 Kanban for strategic oversight while the branch keeps its own local operational
 board.
 
+For development work, Zeus should use `openclaw_factory_project_request` instead
+of raw `openclaw_delegate_task`. The Factory project tool writes the Sicilia
+Kanban project and canonical stage cards before it delegates async to Leo, so
+web/app/repo/preview work cannot disappear into an untracked agent turn.
+
 Then reload user systemd:
 
 ```bash
