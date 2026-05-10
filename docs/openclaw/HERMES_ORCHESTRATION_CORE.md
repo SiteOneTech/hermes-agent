@@ -42,8 +42,10 @@ not commit live values.
 
 ## API Surface
 
-The FastAPI dashboard process mounts internal orchestration routes under `/v1`.
-All routes require `Authorization: Bearer $HERMES_ORCHESTRATION_API_KEY`.
+The dedicated `hermes-orchestration` server exposes internal orchestration
+routes under `/v1`. The Hermes dashboard also mounts the same router for local
+operator use. All routes require
+`Authorization: Bearer $HERMES_ORCHESTRATION_API_KEY`.
 
 Initial routes:
 
@@ -65,6 +67,23 @@ python -m orchestration.migrate --database-url "$HERMES_ORCHESTRATION_DATABASE_U
 
 The migration runner records applied files in `schema_migrations` and is safe
 to re-run.
+
+## Systemd Service
+
+Zeus deployments use:
+
+```text
+deploy/openclaw-zeus/systemd/user/hermes-orchestration.service
+```
+
+Default bind:
+
+```text
+127.0.0.1:8650
+```
+
+Expose it to other branches only through an approved tunnel, private reverse
+proxy, or service-to-service route.
 
 ## Control Plane Rule
 

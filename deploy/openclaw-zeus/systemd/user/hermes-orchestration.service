@@ -1,0 +1,23 @@
+[Unit]
+Description=Hermes Orchestration Core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/hermes/.hermes/hermes-agent/venv/bin/python -m orchestration.server
+WorkingDirectory=/home/hermes/.hermes/hermes-agent
+Environment="PATH=/home/hermes/.hermes/hermes-agent/venv/bin:/home/hermes/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="VIRTUAL_ENV=/home/hermes/.hermes/hermes-agent/venv"
+Environment="HERMES_HOME=/home/hermes/.hermes"
+Environment="HERMES_ORCHESTRATION_HOST=127.0.0.1"
+Environment="HERMES_ORCHESTRATION_PORT=8650"
+Restart=always
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
