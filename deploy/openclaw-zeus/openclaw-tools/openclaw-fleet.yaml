@@ -89,6 +89,7 @@ offices:
         coordinator_agent_id: leo-orquestador
         devops_agent_id: capablanca
         openhands_agent_id: olga-openhands
+        openhands_runner_id: openhands_runner
         repo: /media/jean/DATOS-SSD/sitiouno-software-factory-ai
         canonical_repo: https://github.com/SiteOneTech/sitiouno-software-factory-ai
         purpose: Planificar, implementar, validar y preparar entregables de software por agentes especializados.
@@ -139,3 +140,34 @@ offices:
       - Private GCP route is active from Hermes/HQ on port 80.
       - Browser Tailnet route is active at http://100.119.34.35/.
       - ZEP_API_KEY is configured; Zep read/write smoke test passed from the VM.
+
+  openhands_runner:
+    display_name: OpenHands Runner
+    kind: worker-service
+    status: active
+    gcp_project: su-office-2030
+    gcp_zone: us-central1-a
+    gcp_instance: openhands-runner-01
+    gcp_internal_ip: 10.42.0.5
+    tailscale_host: openhands-runner-01
+    tailscale_ip: null
+    ui_tunnel_url: http://127.0.0.1:3300/
+    ui_tunnel_command: "gcloud compute ssh openhands-runner-01 --project su-office-2030 --zone us-central1-a --tunnel-through-iap -- -N -L 127.0.0.1:3300:127.0.0.1:3300"
+    owner_office: sicilia
+    owner_agent: olga-openhands
+    service_role: openhands-development-runner
+    agents: {}
+    services:
+      openhands:
+        display_name: OpenHands UI and execution runtime
+        status: active
+        local_ui_url: http://127.0.0.1:3300/
+        tunnel_required: true
+    capabilities:
+      - openhands_execution_runner
+      - openhands_ui
+      - software_factory_worker_service
+    notes:
+      - OpenHands is bound to loopback on the runner VM and accessed through IAP tunnel until Tailscale authentication is completed.
+      - Factory should route work through Sicilia and olga-openhands; this service is the execution cell, not a standalone office coordinator.
+      - GitHub credentials and LLM model profile are not stored in this inventory.

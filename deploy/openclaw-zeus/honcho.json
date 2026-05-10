@@ -1,7 +1,7 @@
 {
   "workspace": "sitio-uno-gcp",
   "peerName": "jean",
-  "aiPeer": "zeus",
+  "aiPeer": "zeus_sitiouno",
   "environment": "production",
   "enabled": true,
   "saveMessages": true,
@@ -23,7 +23,7 @@
       "enabled": true,
       "workspace": "sitio-uno-gcp",
       "peerName": "jean",
-      "aiPeer": "zeus",
+      "aiPeer": "zeus_sitiouno",
       "pinPeerName": true,
       "saveMessages": true,
       "writeFrequency": "async",
@@ -46,7 +46,7 @@
         },
         "ai": {
           "observeMe": true,
-          "observeOthers": true
+          "observeOthers": false
         }
       }
     }

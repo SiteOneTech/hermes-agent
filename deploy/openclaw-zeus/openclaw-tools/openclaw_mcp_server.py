@@ -47,7 +47,7 @@ FACTORY_CANONICAL_STAGES = (
     ("discovery", "DISCOVERY", "vera-research", "ready"),
     ("product-shaping", "PRODUCT_SHAPING", "mia-producto", "backlog"),
     ("architecture-review", "ARCHITECTURE_REVIEW", "nico-arquitecto", "backlog"),
-    ("ready-for-sprint", "READY_FOR_SPRINT", "ana-pmo", "backlog"),
+    ("ready-for-sprint", "READY_FOR_SPRINT", "leo-orquestador", "backlog"),
     ("execution", "EXECUTION", "olga-openhands", "backlog"),
     ("code-review", "CODE_REVIEW", "bruno-integrador", "backlog"),
     ("qa-validation", "QA_VALIDATION", "tina-qa", "backlog"),
@@ -996,6 +996,7 @@ def openclaw_branch_report(office_id: str) -> dict[str, Any]:
         return {"ok": False, "error": f"missing delegation token env {token_env}", "token_env": token_env}
     result = _http_probe(endpoint, timeout_s=10.0, bearer_token=token, max_bytes=262144)
     report = result.get("body_json")
+    factory_feedback = _factory_feedback_summary(report) if isinstance(report, dict) else None
     return {
         "ok": bool(result.get("ok") and result.get("status") == 200 and isinstance(report, dict)),
         "office_id": office_id,
@@ -1003,7 +1004,63 @@ def openclaw_branch_report(office_id: str) -> dict[str, Any]:
         "http_status": result.get("status"),
         "duration_s": result.get("duration_s"),
         "report": report if isinstance(report, dict) else None,
+        "factory_feedback": factory_feedback,
         "probe": result if not isinstance(report, dict) else None,
+    }
+
+
+def _factory_feedback_summary(report: dict[str, Any]) -> dict[str, Any]:
+    factory = report.get("factory_workflow") if isinstance(report, dict) else {}
+    runs = factory.get("runs") if isinstance(factory, dict) else []
+    active_blockers: list[dict[str, Any]] = []
+    waiting_approvals: list[dict[str, Any]] = []
+    for run in (runs if isinstance(runs, list) else []):
+        if not isinstance(run, dict):
+            continue
+        gate_review = run.get("gate_review") if isinstance(run.get("gate_review"), dict) else None
+        if gate_review:
+            waiting_approvals.append(
+                {
+                    "project_id": run.get("project_id"),
+                    "state": run.get("state"),
+                    "reviewer_role": gate_review.get("reviewer_role"),
+                    "requested_by": gate_review.get("requested_by"),
+                    "reason": gate_review.get("reason"),
+                    "evidence_paths": gate_review.get("evidence_paths") or [],
+                }
+            )
+        blocked_reason = run.get("blocked_reason")
+        if run.get("status") in {"blocked", "waiting_approval"} or blocked_reason:
+            active_blockers.append(
+                {
+                    "project_id": run.get("project_id"),
+                    "state": run.get("state"),
+                    "status": run.get("status"),
+                    "blocked_reason": blocked_reason,
+                    "current_sprint_id": run.get("current_sprint_id"),
+                }
+            )
+    return {
+        "source_of_truth": "factory_workflow block from the branch report",
+        "zeus_action": (
+            "Use this summary to supervise and decide; do not bypass branch owners "
+            "or ask Leo to close specialist work directly."
+        ),
+        "active_blockers": active_blockers,
+        "waiting_approvals": waiting_approvals,
+        "interlocutors": {
+            "branch_status": "ana-pmo",
+            "orchestration": "leo-orquestador",
+            "discovery": "vera-research",
+            "product": "mia-producto",
+            "architecture": "nico-arquitecto",
+            "execution": "ciro-codex / clara-claude / olga-openhands",
+            "review": "bruno-integrador",
+            "qa": "tina-qa / belen-browser",
+            "security": "sofia-secdevops",
+            "release": "rene-release",
+            "docs_memory": "dario-docs",
+        },
     }
 
 
@@ -1705,6 +1762,8 @@ def openclaw_factory_project_request(
         "footer_credit_required": "desarrollado por: SitioUno Factory",
         "complexity": complexity,
         "autonomy_level": autonomy_level,
+        "role_boundary_enforced": True,
+        "factory_feedback_channel": "openclaw_branch_report.factory_feedback",
         "stage_order": [stage[1] for stage in FACTORY_CANONICAL_STAGES],
     }
 
@@ -1768,6 +1827,10 @@ def openclaw_factory_project_request(
             "10. When the work is complete enough for Jean review, Zeus must send Jean an email completion report with status, preview URL, repo URL, Notion URL, duration, and next decision.",
             "11. If any QA/security/release gate fails, mark REGATE_REQUIRED and do not present the work as accepted.",
             "12. Report progress asynchronously; Zeus will poll branch Kanban and delegation status.",
+            "13. Leo Orquestador must orchestrate only: create role-owned work orders, route engines, record blockers, and assign the next owner.",
+            "14. Leo must not write or close specialist deliverables for Vera, Mia, Nico, Iris, Bruno, Tina, Belen, Sofia, Rene, or Dario.",
+            "15. Every successful stage must include the responsible owner, matching work_order_id, artifact paths, and gate result in FactoryRun.",
+            "16. Exit code 0 or a good narrative is not completion; success without owner evidence must be marked partial/blocked.",
         ]
     )
 
@@ -1847,7 +1910,8 @@ def openclaw_factory_project_request(
             f"Strategic oversight for Factory project {pid}. "
             f"Branch: sicilia. Expected repo: {repo_name}. Expected preview: {preview_url}. "
             "Zeus tracks intent, blockers, acceptance, and Jean-level decisions here; "
-            "Sicilia branch Kanban remains operational truth."
+            "Sicilia FactoryRun and branch Kanban remain operational truth. "
+            "Use openclaw_branch_report.factory_feedback for blockers and gate approvals."
         ),
         status="running",
         priority=2 if complexity in {"standard", "complex"} else 3,
@@ -1858,6 +1922,7 @@ def openclaw_factory_project_request(
             "preview_url_expected": preview_url,
             "canonical_factory_project": True,
             "branch_kanban_project_id": pid,
+            "factory_feedback_channel": "openclaw_branch_report.factory_feedback",
         },
     )
     delegation = openclaw_delegate_task(
