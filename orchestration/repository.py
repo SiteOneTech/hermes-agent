@@ -1,0 +1,142 @@
+"""Repository ports and in-memory implementation for orchestration."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Protocol
+
+from orchestration.domain import (
+    AgentObservabilityLog,
+    ArtifactRef,
+    GateReview,
+    WorkflowEvent,
+    WorkflowRun,
+    WorkOrder,
+    StepRun,
+)
+
+
+class DuplicateInboxMessage(Exception):
+    """Raised when an idempotent callback was already processed."""
+
+
+class EntityNotFound(KeyError):
+    """Raised when a required orchestration entity is missing."""
+
+
+class OrchestrationRepository(Protocol):
+    def create_workflow_run(self, run: WorkflowRun) -> None: ...
+    def get_workflow_run(self, workflow_run_id: str) -> WorkflowRun: ...
+    def update_workflow_run(self, run: WorkflowRun) -> None: ...
+
+    def create_step_run(self, step: StepRun) -> None: ...
+    def get_step_run(self, step_run_id: str) -> StepRun: ...
+    def update_step_run(self, step: StepRun) -> None: ...
+
+    def create_work_order(self, work_order: WorkOrder) -> None: ...
+    def get_work_order(self, work_order_id: str) -> WorkOrder: ...
+    def update_work_order(self, work_order: WorkOrder) -> None: ...
+
+    def save_gate_review(self, gate: GateReview) -> None: ...
+    def get_gate_review(self, gate_review_id: str) -> GateReview: ...
+    def update_gate_review(self, gate: GateReview) -> None: ...
+
+    def append_event(self, event: WorkflowEvent) -> None: ...
+    def list_events(self, workflow_run_id: str) -> list[WorkflowEvent]: ...
+
+    def add_artifact_ref(self, artifact: ArtifactRef) -> None: ...
+    def add_agent_log(self, log: AgentObservabilityLog) -> None: ...
+
+    def record_inbox_message(self, idempotency_key: str, payload: dict) -> bool: ...
+
+
+class InMemoryOrchestrationRepository:
+    """Small deterministic repository for domain tests and fake-worker pilots."""
+
+    def __init__(self) -> None:
+        self.workflow_runs: dict[str, WorkflowRun] = {}
+        self.step_runs: dict[str, StepRun] = {}
+        self.work_orders: dict[str, WorkOrder] = {}
+        self.gate_reviews: dict[str, GateReview] = {}
+        self.events: list[WorkflowEvent] = []
+        self.artifacts: dict[str, ArtifactRef] = {}
+        self.agent_logs: dict[str, AgentObservabilityLog] = {}
+        self.inbox_keys: set[str] = set()
+
+    def create_workflow_run(self, run: WorkflowRun) -> None:
+        self.workflow_runs[run.workflow_run_id] = deepcopy(run)
+
+    def get_workflow_run(self, workflow_run_id: str) -> WorkflowRun:
+        try:
+            return deepcopy(self.workflow_runs[workflow_run_id])
+        except KeyError as exc:
+            raise EntityNotFound(workflow_run_id) from exc
+
+    def update_workflow_run(self, run: WorkflowRun) -> None:
+        if run.workflow_run_id not in self.workflow_runs:
+            raise EntityNotFound(run.workflow_run_id)
+        self.workflow_runs[run.workflow_run_id] = deepcopy(run)
+
+    def create_step_run(self, step: StepRun) -> None:
+        self.step_runs[step.step_run_id] = deepcopy(step)
+
+    def get_step_run(self, step_run_id: str) -> StepRun:
+        try:
+            return deepcopy(self.step_runs[step_run_id])
+        except KeyError as exc:
+            raise EntityNotFound(step_run_id) from exc
+
+    def update_step_run(self, step: StepRun) -> None:
+        if step.step_run_id not in self.step_runs:
+            raise EntityNotFound(step.step_run_id)
+        self.step_runs[step.step_run_id] = deepcopy(step)
+
+    def create_work_order(self, work_order: WorkOrder) -> None:
+        self.work_orders[work_order.work_order_id] = deepcopy(work_order)
+
+    def get_work_order(self, work_order_id: str) -> WorkOrder:
+        try:
+            return deepcopy(self.work_orders[work_order_id])
+        except KeyError as exc:
+            raise EntityNotFound(work_order_id) from exc
+
+    def update_work_order(self, work_order: WorkOrder) -> None:
+        if work_order.work_order_id not in self.work_orders:
+            raise EntityNotFound(work_order.work_order_id)
+        self.work_orders[work_order.work_order_id] = deepcopy(work_order)
+
+    def save_gate_review(self, gate: GateReview) -> None:
+        self.gate_reviews[gate.gate_review_id] = deepcopy(gate)
+
+    def get_gate_review(self, gate_review_id: str) -> GateReview:
+        try:
+            return deepcopy(self.gate_reviews[gate_review_id])
+        except KeyError as exc:
+            raise EntityNotFound(gate_review_id) from exc
+
+    def update_gate_review(self, gate: GateReview) -> None:
+        if gate.gate_review_id not in self.gate_reviews:
+            raise EntityNotFound(gate.gate_review_id)
+        self.gate_reviews[gate.gate_review_id] = deepcopy(gate)
+
+    def append_event(self, event: WorkflowEvent) -> None:
+        self.events.append(deepcopy(event))
+
+    def list_events(self, workflow_run_id: str) -> list[WorkflowEvent]:
+        return [
+            deepcopy(item)
+            for item in self.events
+            if item.workflow_run_id == workflow_run_id
+        ]
+
+    def add_artifact_ref(self, artifact: ArtifactRef) -> None:
+        self.artifacts[artifact.artifact_ref_id] = deepcopy(artifact)
+
+    def add_agent_log(self, log: AgentObservabilityLog) -> None:
+        self.agent_logs[log.log_id] = deepcopy(log)
+
+    def record_inbox_message(self, idempotency_key: str, payload: dict) -> bool:
+        if idempotency_key in self.inbox_keys:
+            return False
+        self.inbox_keys.add(idempotency_key)
+        return True

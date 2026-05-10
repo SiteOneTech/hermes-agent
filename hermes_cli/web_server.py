@@ -65,6 +65,15 @@ _log = logging.getLogger(__name__)
 
 app = FastAPI(title="Hermes Agent", version=__version__)
 
+try:
+    from orchestration.api import router as orchestration_router
+except Exception as exc:  # pragma: no cover - optional runtime surface
+    orchestration_router = None
+    _log.warning("Hermes orchestration API routes are unavailable: %s", exc)
+
+if orchestration_router is not None:
+    app.include_router(orchestration_router)
+
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
 # Generated fresh on every server start — dies when the process exits.
