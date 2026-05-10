@@ -13,6 +13,7 @@ installation is complete.
 - `honcho.json` - Honcho memory configuration without API keys.
 - `config/config.yaml.fragment.example` - config fragment for memory and MCP servers.
 - `openclaw-tools/` - OpenClaw fleet MCP and MiroFish MCP wrappers.
+- `bin/start-browser-cdp.sh` - local-only Chrome CDP launcher for advanced browser tools.
 - `honcho-backup/backup_honcho.py` - local Honcho workspace exporter.
 - `systemd/user/` - user service/timer templates.
 - `skills/research/llm-wiki/` - local LLM wiki skill reference.
@@ -21,12 +22,15 @@ installation is complete.
 
 ```bash
 sudo -iu hermes
-install -d ~/.hermes/openclaw-tools ~/.hermes/honcho-backup ~/.config/systemd/user
+install -d ~/.hermes/bin ~/.hermes/openclaw-tools ~/.hermes/honcho-backup ~/.config/systemd/user
 cp SOUL.md ~/.hermes/SOUL.md
 cp honcho.json ~/.hermes/honcho.json
+cp bin/start-browser-cdp.sh ~/.hermes/bin/
+chmod 0755 ~/.hermes/bin/start-browser-cdp.sh
 cp openclaw-tools/* ~/.hermes/openclaw-tools/
 cp honcho-backup/backup_honcho.py ~/.hermes/honcho-backup/
 cp systemd/user/honcho-backup.* ~/.config/systemd/user/
+cp systemd/user/hermes-browser-cdp.service ~/.config/systemd/user/
 cp systemd/user/hermes-gateway.service ~/.config/systemd/user/
 mkdir -p ~/.config/systemd/user/hermes-gateway.service.d
 cp systemd/user/hermes-gateway.service.d/*.conf ~/.config/systemd/user/hermes-gateway.service.d/
@@ -62,6 +66,7 @@ Then reload user systemd:
 
 ```bash
 systemctl --user daemon-reload
+systemctl --user enable --now hermes-browser-cdp.service
 systemctl --user enable --now hermes-gateway.service
 systemctl --user enable --now honcho-backup.timer
 ```
@@ -71,6 +76,8 @@ systemctl --user enable --now honcho-backup.timer
 ```bash
 hermes doctor --fix
 hermes memory status
+curl -fsS http://127.0.0.1:9222/json/version
+systemctl --user status hermes-browser-cdp.service
 systemctl --user status hermes-gateway.service
 systemctl --user status honcho-backup.timer
 ```

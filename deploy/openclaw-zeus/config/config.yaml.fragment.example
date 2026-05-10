@@ -13,6 +13,12 @@ memory:
   nudge_interval: 10
   flush_min_turns: 6
 
+browser:
+  # Local-only Chrome DevTools Protocol endpoint managed by
+  # systemd/user/hermes-browser-cdp.service. Keep this bound to 127.0.0.1;
+  # CDP allows full browser control and must not be exposed on the network.
+  cdp_url: http://127.0.0.1:9222
+
 mcp_servers:
   openclaw-office:
     command: /home/hermes/.hermes/hermes-agent/venv/bin/python
