@@ -117,6 +117,34 @@ class TestCommandTimeoutCache:
 
 
 # ---------------------------------------------------------------------------
+# Linux Chromium sandbox fallback
+# ---------------------------------------------------------------------------
+
+class TestChromiumSandboxFallback:
+
+    def test_detects_apparmor_userns_restriction(self):
+        import tools.browser_tool as bt
+
+        with patch("os.geteuid", return_value=1000), \
+             patch("pathlib.Path.read_text", return_value="1\n"):
+            assert bt._needs_chromium_sandbox_bypass() is True
+
+    def test_missing_apparmor_probe_does_not_force_bypass(self):
+        import tools.browser_tool as bt
+
+        with patch("os.geteuid", return_value=1000), \
+             patch("pathlib.Path.read_text", side_effect=FileNotFoundError):
+            assert bt._needs_chromium_sandbox_bypass() is False
+
+    def test_preserves_existing_agent_browser_args(self):
+        from tools.browser_tool import _agent_browser_args_with_sandbox_bypass
+
+        args = _agent_browser_args_with_sandbox_bypass("--foo, --disable-dev-shm-usage")
+
+        assert args == "--foo,--disable-dev-shm-usage,--no-sandbox"
+
+
+# ---------------------------------------------------------------------------
 # Caching: _discover_homebrew_node_dirs
 # ---------------------------------------------------------------------------
 

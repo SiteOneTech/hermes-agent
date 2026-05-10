@@ -445,6 +445,39 @@ class TestRunBrowserCommandPathConstruction:
         assert "/opt/homebrew/bin" in result_path
         assert "/opt/homebrew/sbin" in result_path
 
+    def test_subprocess_injects_agent_browser_args_for_apparmor_userns(self, tmp_path):
+        """Ubuntu/AppArmor local Chromium fallback should use agent-browser's args env."""
+        captured_env = {}
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            captured_env.update(kwargs.get("env", {}))
+            return mock_proc
+
+        fake_session = {
+            "session_name": "test-session",
+            "session_id": "test-id",
+            "cdp_url": None,
+        }
+        fake_json = json.dumps({"success": True})
+
+        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool._needs_chromium_sandbox_bypass", return_value=True), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
+            with patch("builtins.open", mock_open(read_data=fake_json)):
+                _run_browser_command("test-task", "navigate", ["https://example.com"])
+
+        assert captured_env["AGENT_BROWSER_ARGS"] == "--no-sandbox,--disable-dev-shm-usage"
+
     def test_subprocess_path_includes_termux_fallback_dirs(self, tmp_path):
         """Termux fallback dirs should survive browser PATH rebuilding."""
         captured_env = {}

@@ -464,6 +464,37 @@ def _termux_browser_install_error() -> str:
     )
 
 
+def _needs_chromium_sandbox_bypass() -> bool:
+    """Return True when local Chromium needs no-sandbox launch flags.
+
+    Ubuntu 23.10+ can restrict unprivileged user namespaces through AppArmor.
+    In that state, bundled Chromium exits with "No usable sandbox" unless the
+    process uses a distro-supported SUID sandbox or launches with no-sandbox.
+    Hermes uses ephemeral local browser sessions, so we apply the pragmatic
+    local-agent workaround only when the host restriction is detected.
+    """
+
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    try:
+        return (
+            Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .read_text(encoding="utf-8")
+            .strip()
+            == "1"
+        )
+    except OSError:
+        return False
+
+
+def _agent_browser_args_with_sandbox_bypass(existing_args: str | None) -> str:
+    parts = [part.strip() for part in re.split(r"[\n,]+", existing_args or "") if part.strip()]
+    for required in ("--no-sandbox", "--disable-dev-shm-usage"):
+        if required not in parts:
+            parts.append(required)
+    return ",".join(parts)
+
+
 def _is_local_mode() -> bool:
     """Return True when the browser tool will use a local browser backend."""
     if _get_cdp_override():
@@ -1464,6 +1495,11 @@ def _run_browser_command(
         if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
             idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
             browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
+
+        if not session_info.get("cdp_url") and _needs_chromium_sandbox_bypass():
+            browser_env["AGENT_BROWSER_ARGS"] = _agent_browser_args_with_sandbox_bypass(
+                browser_env.get("AGENT_BROWSER_ARGS")
+            )
         
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file
