@@ -37,8 +37,8 @@ HERMES_ORCHESTRATION_API_KEY=...
 HERMES_ORCHESTRATION_NODE_ID=zeus
 ```
 
-Store production values in Secret Manager or a protected environment file. Do
-not commit live values.
+Store production values in Secret Manager and deploy them to a protected
+`~/.hermes/orchestration.env` file on Zeus. Do not commit live values.
 
 ## API Surface
 

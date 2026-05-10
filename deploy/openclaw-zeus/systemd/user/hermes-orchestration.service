@@ -12,6 +12,7 @@ Environment="VIRTUAL_ENV=/home/hermes/.hermes/hermes-agent/venv"
 Environment="HERMES_HOME=/home/hermes/.hermes"
 Environment="HERMES_ORCHESTRATION_HOST=127.0.0.1"
 Environment="HERMES_ORCHESTRATION_PORT=8650"
+EnvironmentFile=-/home/hermes/.hermes/orchestration.env
 Restart=always
 RestartSec=30
 KillSignal=SIGTERM

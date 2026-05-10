@@ -40,7 +40,7 @@ cp systemd/user/hermes-gateway.service.d/*.conf ~/.config/systemd/user/hermes-ga
 
 Merge `config/config.yaml.fragment.example` into `~/.hermes/config.yaml`.
 
-Set secrets only in `~/.hermes/.env`, for example:
+Set general Hermes secrets only in `~/.hermes/.env`, for example:
 
 ```bash
 HONCHO_API_KEY=...
@@ -53,6 +53,17 @@ Zeus should only reference the Google Secret Manager secret id
 `factory-sendgrid-dev-api-key` in project `su-office-2030`; the Factory runner
 reads it through approved service-account access when an email/OTP E2E test
 requires it.
+
+Set Orchestration Core secrets in `~/.hermes/orchestration.env`, sourced from
+Google Secret Manager by the deploy process:
+
+```bash
+HERMES_ORCHESTRATION_DATABASE_URL=...
+HERMES_ORCHESTRATION_API_KEY=...
+HERMES_ORCHESTRATION_NODE_ID=zeus
+```
+
+Keep this file mode `0600`.
 
 Zeus should use `openclaw_branch_report(<office_id>)` to read each branch
 `GET /v1/delegate` report. The report's `kanban` block feeds Zeus' Hermes
