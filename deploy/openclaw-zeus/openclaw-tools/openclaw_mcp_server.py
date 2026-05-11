@@ -635,6 +635,167 @@ def _orchestration_api_request(
     }
 
 
+def _metadata_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    metadata = payload.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _nested_dict(value: Any, key: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    nested = value.get(key)
+    return nested if isinstance(nested, dict) else {}
+
+
+def _regex_id(pattern: str, text: str) -> str:
+    match = re.search(pattern, text, flags=re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+def _orchestration_refs_from_task(
+    task: str,
+    payload: dict[str, Any],
+) -> tuple[str, str]:
+    metadata = _metadata_from_payload(payload)
+    orchestration = _nested_dict(metadata, "orchestration")
+    workflow_run_id = str(
+        metadata.get("workflow_run_id")
+        or orchestration.get("workflow_run_id")
+        or ""
+    ).strip()
+    work_order_id = str(
+        metadata.get("work_order_id")
+        or metadata.get("source_work_order_id")
+        or ""
+    ).strip()
+
+    if not workflow_run_id:
+        workflow_run_id = _regex_id(r"\bWORKFLOW_RUN_ID\s*:\s*([A-Za-z0-9_.-]+)", task)
+    if not work_order_id:
+        work_order_id = _regex_id(r"\bWORK\s+ORDER\s*:\s*([A-Za-z0-9_.-]+)", task)
+    if not work_order_id:
+        work_order_id = _regex_id(r"\bwork_order_id\b\s*[=:]\s*([A-Za-z0-9_.-]+)", task)
+    return workflow_run_id, work_order_id
+
+
+def _sync_orchestration_delegation_acceptance(
+    *,
+    task_text: str,
+    request_payload: dict[str, Any],
+    office_id: str,
+    agent_id: str,
+    branch_task_id: str,
+    async_mode: bool,
+    response: Any,
+) -> dict[str, Any]:
+    workflow_run_id, work_order_id = _orchestration_refs_from_task(
+        task_text,
+        request_payload,
+    )
+    if not workflow_run_id and not work_order_id:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "No WORKFLOW_RUN_ID or WORK ORDER reference found.",
+        }
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "workflow_run_id": workflow_run_id,
+        "work_order_id": work_order_id,
+        "branch_task_id": branch_task_id,
+    }
+    metrics = {
+        "office_id": office_id,
+        "agent_id": agent_id,
+        "branch_task_id": branch_task_id,
+        "async_mode": async_mode,
+        "transport": "branch-delegation-v1",
+    }
+
+    if work_order_id:
+        dispatch = _orchestration_api_request(
+            "POST",
+            f"/v1/work-orders/{quote(work_order_id)}/dispatch",
+            payload={"actor": "zeus-delegation-router", "metrics": metrics},
+            timeout_s=10.0,
+        )
+        heartbeat = _orchestration_api_request(
+            "POST",
+            f"/v1/work-orders/{quote(work_order_id)}/heartbeat",
+            payload={
+                "actor": agent_id,
+                "metrics": metrics,
+                "notes": "Branch receiver accepted delegated work.",
+            },
+            timeout_s=10.0,
+        )
+        result["dispatch"] = dispatch
+        result["heartbeat"] = heartbeat
+        result["ok"] = bool(heartbeat.get("ok") or dispatch.get("ok"))
+
+    if workflow_run_id:
+        event = _orchestration_api_request(
+            "POST",
+            "/v1/webhooks/factory-event",
+            payload={
+                "workflow_run_id": workflow_run_id,
+                "event_type": "delegation.accepted",
+                "actor": "zeus-delegation-router",
+                "work_order_id": work_order_id or None,
+                "idempotency_key": f"delegation.accepted:{office_id}:{branch_task_id}",
+                "payload": {
+                    "office_id": office_id,
+                    "agent_id": agent_id,
+                    "branch_task_id": branch_task_id,
+                    "async_mode": async_mode,
+                    "response": response if isinstance(response, dict) else {},
+                },
+            },
+            timeout_s=10.0,
+        )
+        result["event"] = event
+        result["ok"] = bool(result.get("ok") and event.get("ok"))
+
+    return result
+
+
+def _sync_orchestration_delegation_failure(
+    *,
+    task_text: str,
+    request_payload: dict[str, Any],
+    office_id: str,
+    agent_id: str,
+    branch_task_id: str,
+    error: str,
+) -> dict[str, Any]:
+    workflow_run_id, work_order_id = _orchestration_refs_from_task(
+        task_text,
+        request_payload,
+    )
+    if not workflow_run_id:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "No WORKFLOW_RUN_ID reference found.",
+        }
+    return _orchestration_api_request(
+        "POST",
+        f"/v1/workflow-runs/{quote(workflow_run_id)}/interventions",
+        payload={
+            "actor": "zeus-delegation-router",
+            "reason": (
+                f"Delegation to {office_id}/{agent_id} failed for task "
+                f"{branch_task_id}: {error[:500]}"
+            ),
+            "action": "blocked",
+            "work_order_id": work_order_id or None,
+            "notes": "Recorded automatically by openclaw_delegate_task.",
+        },
+        timeout_s=10.0,
+    )
+
+
 def _notion_state_path() -> Path:
     return Path(_env("OPENCLAW_NOTION_STATE", str(DEFAULT_NOTION_STATE))).expanduser()
 
@@ -1799,7 +1960,13 @@ def openclaw_orchestration_start_factory_project(
     sprint_goal: str = "",
     backlog_json: str = "",
 ) -> dict[str, Any]:
-    """Create a canonical Factory Scrum workflow run in Hermes Orchestration Core."""
+    """Low-level workflow creation only; user Factory jobs should use openclaw_factory_project_request.
+
+    This tool creates durable state, steps, and work orders. It does not perform
+    the canonical Factory handoff by itself. For Jean/user software requests,
+    call openclaw_factory_project_request so Zeus creates the workflow and
+    delegates through Sicilia/Leo in one governed operation.
+    """
     title = str(title or "").strip()
     objective = str(objective or "").strip()
     project_id = str(project_id or "").strip()
@@ -1829,12 +1996,20 @@ def openclaw_orchestration_start_factory_project(
         "sprint_goal": str(sprint_goal or "").strip(),
         "backlog_items": backlog_items,
     }
-    return _orchestration_api_request(
+    result = _orchestration_api_request(
         "POST",
         "/v1/workflows/factory-scrum",
         payload=payload,
         timeout_s=20.0,
     )
+    if result.get("ok"):
+        result["canonical_note"] = (
+            "Workflow was created only. For user-facing Factory work, the "
+            "canonical entrypoint is openclaw_factory_project_request because "
+            "it also creates the governed delegation envelope."
+        )
+        result["next_required_tool"] = "openclaw_factory_project_request"
+    return result
 
 
 @mcp.tool()
@@ -2184,8 +2359,8 @@ def openclaw_openhands_delegate_task(
 
     Default route is `factory`: Zeus delegates to Sicilia's `olga-openhands`
     agent, which owns OpenHands execution. Set execute=false to validate the
-    route without starting work. Direct connector execution is available only
-    by setting route="direct" and execute=true.
+    route without starting work. Direct connector execution is disabled by
+    default and must not be used for normal Factory work.
     """
     task = str(task or "").strip()
     if not task:
@@ -2232,6 +2407,25 @@ def openclaw_openhands_delegate_task(
 
     if route != "direct":
         return {"ok": False, "error": "route must be 'factory' or 'direct'"}
+
+    direct_enabled = _env("OPENCLAW_ALLOW_DIRECT_OPENHANDS_EXECUTION").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if execute and not direct_enabled:
+        return {
+            "ok": False,
+            "route": "direct",
+            "dry_run": False,
+            "direct_execution_enabled": False,
+            "error": (
+                "Direct OpenHands execution is disabled. Use route='factory' "
+                "with execute=true so Sicilia/olga-openhands owns the work, "
+                "or set OPENCLAW_ALLOW_DIRECT_OPENHANDS_EXECUTION=1 only for "
+                "an explicitly approved break-glass task."
+            ),
+        }
 
     office, err = _openhands_runner()
     if err:
@@ -2340,6 +2534,7 @@ def openclaw_delegate_task(
         payload["project_id"] = str(project_id).strip()
     if str(initiative_id or "").strip():
         payload["initiative_id"] = str(initiative_id).strip()
+    parsed_metadata: dict[str, Any] = {}
     if str(metadata_json or "").strip():
         try:
             parsed_metadata = json.loads(str(metadata_json))
@@ -2360,6 +2555,10 @@ def openclaw_delegate_task(
             "token_env": token_env,
             "token_configured": bool(token),
             "request": payload,
+            "orchestration_reference": {
+                "workflow_run_id": _orchestration_refs_from_task(task, payload)[0],
+                "work_order_id": _orchestration_refs_from_task(task, payload)[1],
+            },
         }
 
     body = json.dumps(payload).encode("utf-8")
@@ -2384,7 +2583,7 @@ def openclaw_delegate_task(
                 parsed: Any = json.loads(text)
             except json.JSONDecodeError:
                 parsed = {"raw": text}
-            return {
+            result_payload = {
                 "ok": True,
                 "http_status": resp.status,
                 "duration_s": round(time.monotonic() - started, 3),
@@ -2392,9 +2591,19 @@ def openclaw_delegate_task(
                 "async_mode": async_mode,
                 "response": parsed,
             }
+            result_payload["orchestration_sync"] = _sync_orchestration_delegation_acceptance(
+                task_text=task,
+                request_payload=payload,
+                office_id=office_id,
+                agent_id=agent_id,
+                branch_task_id=task_id,
+                async_mode=async_mode,
+                response=parsed,
+            )
+            return result_payload
     except urllib.error.HTTPError as exc:
         text = exc.read(4096).decode("utf-8", errors="replace")
-        return {
+        result_payload = {
             "ok": False,
             "http_status": exc.code,
             "duration_s": round(time.monotonic() - started, 3),
@@ -2402,14 +2611,32 @@ def openclaw_delegate_task(
             "async_mode": async_mode,
             "error": text or str(exc),
         }
+        result_payload["orchestration_sync"] = _sync_orchestration_delegation_failure(
+            task_text=task,
+            request_payload=payload,
+            office_id=office_id,
+            agent_id=agent_id,
+            branch_task_id=task_id,
+            error=text or str(exc),
+        )
+        return result_payload
     except Exception as exc:
-        return {
+        result_payload = {
             "ok": False,
             "duration_s": round(time.monotonic() - started, 3),
             "task_id": task_id,
             "async_mode": async_mode,
             "error": str(exc),
         }
+        result_payload["orchestration_sync"] = _sync_orchestration_delegation_failure(
+            task_text=task,
+            request_payload=payload,
+            office_id=office_id,
+            agent_id=agent_id,
+            branch_task_id=task_id,
+            error=str(exc),
+        )
+        return result_payload
 
 
 @mcp.tool()
