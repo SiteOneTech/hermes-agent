@@ -25,6 +25,7 @@ import re
 import signal
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -448,10 +449,16 @@ def _ensure_current_event_loop(request):
         yield
         return
 
-    try:
-        loop = asyncio.get_event_loop_policy().get_event_loop()
-    except RuntimeError:
-        loop = None
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="There is no current event loop",
+            category=DeprecationWarning,
+        )
+        try:
+            loop = asyncio.get_event_loop_policy().get_event_loop()
+        except RuntimeError:
+            loop = None
 
     created = loop is None or loop.is_closed()
     if created:

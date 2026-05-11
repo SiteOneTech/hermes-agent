@@ -26,7 +26,7 @@ from copy import deepcopy
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urlencode, urljoin
 
 try:
     import yaml
@@ -198,6 +198,34 @@ def _factory_backlog_items(pid: str, title: str, complexity: str) -> list[dict[s
             }
         )
     return items
+
+
+def _factory_initial_delegation_work_order_id(work_orders: list[dict[str, Any]]) -> str:
+    """Return the first concrete Core work order Zeus delegates to Sicilia."""
+    for item in work_orders:
+        if not isinstance(item, dict):
+            continue
+        inputs = item.get("inputs") if isinstance(item.get("inputs"), dict) else {}
+        candidate = str(item.get("work_order_id") or "").strip()
+        if (
+            item.get("owner_role") == "leo-orquestador"
+            and inputs.get("stage") == "IDEA"
+            and _looks_like_work_order_id(candidate)
+        ):
+            return candidate
+    for item in work_orders:
+        if not isinstance(item, dict):
+            continue
+        candidate = str(item.get("work_order_id") or "").strip()
+        if item.get("owner_role") == "leo-orquestador" and _looks_like_work_order_id(candidate):
+            return candidate
+    for item in work_orders:
+        if not isinstance(item, dict):
+            continue
+        candidate = str(item.get("work_order_id") or "").strip()
+        if _looks_like_work_order_id(candidate):
+            return candidate
+    return ""
 
 
 def _github_api_request(
@@ -816,29 +844,55 @@ def _regex_id(pattern: str, text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _looks_like_work_order_id(value: str) -> bool:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return False
+    if candidate.startswith(("wo_", "work_order_")):
+        return True
+    # Legacy Factory ids use project-id:stage-key. Avoid accepting prose values
+    # such as "codex" from "work order: codex, claude_code, ...".
+    return bool(re.match(r"^[A-Za-z][A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+$", candidate))
+
+
+def _first_work_order_id(*values: Any) -> str:
+    for value in values:
+        candidate = str(value or "").strip()
+        if _looks_like_work_order_id(candidate):
+            return candidate
+    return ""
+
+
 def _orchestration_refs_from_task(
     task: str,
     payload: dict[str, Any],
 ) -> tuple[str, str]:
     metadata = _metadata_from_payload(payload)
     orchestration = _nested_dict(metadata, "orchestration")
+    delegation_context = _nested_dict(metadata, "delegation_context")
     workflow_run_id = str(
         metadata.get("workflow_run_id")
         or orchestration.get("workflow_run_id")
         or ""
     ).strip()
-    work_order_id = str(
+    work_order_id = _first_work_order_id(
         metadata.get("work_order_id")
-        or metadata.get("source_work_order_id")
-        or ""
-    ).strip()
+        or "",
+        metadata.get("source_work_order_id") or "",
+        delegation_context.get("work_order_id") or "",
+        delegation_context.get("initial_work_order_id") or "",
+        orchestration.get("work_order_id") or "",
+        orchestration.get("initial_work_order_id") or "",
+    )
 
     if not workflow_run_id:
         workflow_run_id = _regex_id(r"\bWORKFLOW_RUN_ID\s*:\s*([A-Za-z0-9_.-]+)", task)
     if not work_order_id:
-        work_order_id = _regex_id(r"\bWORK\s+ORDER\s*:\s*([A-Za-z0-9_.-]+)", task)
-    if not work_order_id:
-        work_order_id = _regex_id(r"\bwork_order_id\b\s*[=:]\s*([A-Za-z0-9_.-]+)", task)
+        work_order_id = _first_work_order_id(
+            _regex_id(r"\bWORK_ORDER_ID\s*:\s*([A-Za-z0-9_.:-]+)", task),
+            _regex_id(r"\bWORK\s+ORDER\s+ID\s*:\s*([A-Za-z0-9_.:-]+)", task),
+            _regex_id(r"\bwork_order_id\b\s*[=:]\s*([A-Za-z0-9_.:-]+)", task),
+        )
     return workflow_run_id, work_order_id
 
 
@@ -1469,7 +1523,9 @@ def _factory_feedback_summary(report: dict[str, Any]) -> dict[str, Any]:
         "source_of_truth": "factory_workflow block from the branch report",
         "zeus_action": (
             "Use this summary to supervise and decide; do not bypass branch owners "
-            "or ask Leo to close specialist work directly."
+            "or ask Leo to close specialist work directly. For approvals, holds, "
+            "or requested changes, first read evidence with openclaw_factory_artifact_get, "
+            "then use openclaw_factory_gate_decision."
         ),
         "active_blockers": active_blockers,
         "waiting_approvals": waiting_approvals,
@@ -1487,6 +1543,267 @@ def _factory_feedback_summary(report: dict[str, Any]) -> dict[str, Any]:
             "docs_memory": "dario-docs",
         },
     }
+
+
+def _branch_factory_post(
+    office_id: str,
+    path: str,
+    payload: dict[str, Any],
+    *,
+    timeout_s: float = 20.0,
+) -> dict[str, Any]:
+    office_id = str(office_id or "").strip().lower()
+    office, err = _office_or_error(office_id)
+    if err:
+        return err
+    assert office is not None
+    endpoint = str(office.get("delegate_endpoint") or "").strip()
+    token_env = str(office.get("token_env") or "").strip()
+    token = _env(token_env) if token_env else ""
+    if not endpoint:
+        return {"ok": False, "error": f"office '{office_id}' has no delegate_endpoint"}
+    if not token:
+        return {"ok": False, "error": f"missing delegation token env {token_env}", "token_env": token_env}
+    base = endpoint.rsplit("/v1/delegate", 1)[0].rstrip("/")
+    url = f"{base}/{path.lstrip('/')}"
+    result = _http_json_request(
+        "POST",
+        url,
+        payload=payload,
+        bearer_token=token,
+        timeout_s=timeout_s,
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "office_id": office_id,
+        "endpoint": url,
+        "http_status": result.get("status"),
+        "result": result.get("body_json"),
+        "error": result.get("error"),
+        "duration_s": result.get("duration_s"),
+    }
+
+
+def _branch_factory_get(
+    office_id: str,
+    path: str,
+    *,
+    timeout_s: float = 20.0,
+    max_bytes: int = 262144,
+) -> dict[str, Any]:
+    office_id = str(office_id or "").strip().lower()
+    office, err = _office_or_error(office_id)
+    if err:
+        return err
+    assert office is not None
+    endpoint = str(office.get("delegate_endpoint") or "").strip()
+    token_env = str(office.get("token_env") or "").strip()
+    token = _env(token_env) if token_env else ""
+    if not endpoint:
+        return {"ok": False, "error": f"office '{office_id}' has no delegate_endpoint"}
+    if not token:
+        return {"ok": False, "error": f"missing delegation token env {token_env}", "token_env": token_env}
+    base = endpoint.rsplit("/v1/delegate", 1)[0].rstrip("/")
+    url = f"{base}/{path.lstrip('/')}"
+    result = _http_json_request(
+        "GET",
+        url,
+        bearer_token=token,
+        timeout_s=timeout_s,
+        max_bytes=max_bytes,
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "office_id": office_id,
+        "endpoint": url,
+        "http_status": result.get("status"),
+        "result": result.get("body_json"),
+        "error": result.get("error"),
+        "duration_s": result.get("duration_s"),
+    }
+
+
+@mcp.tool()
+def openclaw_factory_gate_decision(
+    project_id: str,
+    state: str,
+    decision: str,
+    notes: str = "",
+    office_id: str = "sicilia",
+    reviewer_role: str = "zeus",
+    dispatch_next: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Approve, hold, reject, or request changes on a Factory stage gate."""
+    office_id = str(office_id or "sicilia").strip().lower()
+    project_id = str(project_id or "").strip()
+    state = str(state or "").strip().upper()
+    decision = str(decision or "").strip().lower()
+    reviewer_role = str(reviewer_role or "zeus").strip() or "zeus"
+    notes = str(notes or "").strip()
+    if not project_id:
+        return {"ok": False, "error": "project_id is required"}
+    if not state:
+        return {"ok": False, "error": "state is required"}
+    if decision not in {
+        "approve",
+        "approved",
+        "hold",
+        "pause",
+        "reject",
+        "rejected",
+        "changes_requested",
+        "request_changes",
+    }:
+        return {
+            "ok": False,
+            "error": "decision must be approve, hold, reject, or changes_requested",
+        }
+    payload = {
+        "project_id": project_id,
+        "state": state,
+        "decision": decision,
+        "reviewer_role": reviewer_role,
+        "notes": notes,
+        "branch": office_id,
+        "dispatch_next": bool(dispatch_next),
+    }
+    if dry_run:
+        office, err = _office_or_error(office_id)
+        if err:
+            return err
+        assert office is not None
+        endpoint = str(office.get("delegate_endpoint") or "").strip()
+        base = endpoint.rsplit("/v1/delegate", 1)[0].rstrip("/") if endpoint else ""
+        return {
+            "ok": True,
+            "dry_run": True,
+            "office_id": office_id,
+            "endpoint": f"{base}/v1/factory/gate-decision" if base else None,
+            "payload": payload,
+            "usage": "Set dry_run=false after checking openclaw_branch_report.factory_feedback.",
+        }
+    result = _branch_factory_post(
+        office_id,
+        "/v1/factory/gate-decision",
+        payload,
+        timeout_s=20.0,
+    )
+    return {
+        **result,
+        "project_id": project_id,
+        "state": state,
+        "decision": decision,
+        "next_poll": {
+            "tool": "openclaw_branch_report",
+            "office_id": office_id,
+            "reason": "branch report is canonical for Factory state, hold/blocker status, and next gate",
+        },
+    }
+
+
+@mcp.tool()
+def openclaw_factory_artifact_list(
+    project_id: str,
+    office_id: str = "sicilia",
+) -> dict[str, Any]:
+    """List Markdown artifacts available for a Factory project on a branch."""
+    office_id = str(office_id or "sicilia").strip().lower()
+    project_id = str(project_id or "").strip()
+    if not project_id:
+        return {"ok": False, "error": "project_id is required"}
+    query = urlencode({"project_id": project_id})
+    return _branch_factory_get(
+        office_id,
+        f"/v1/factory/artifacts?{query}",
+        timeout_s=20.0,
+        max_bytes=262144,
+    )
+
+
+@mcp.tool()
+def openclaw_factory_artifact_get(
+    project_id: str,
+    path: str,
+    office_id: str = "sicilia",
+    max_bytes: int = 120000,
+) -> dict[str, Any]:
+    """Read one Markdown artifact from a Factory project on a branch."""
+    office_id = str(office_id or "sicilia").strip().lower()
+    project_id = str(project_id or "").strip()
+    path = str(path or "").strip()
+    if not project_id:
+        return {"ok": False, "error": "project_id is required"}
+    if not path:
+        return {"ok": False, "error": "path is required"}
+    max_bytes = max(1, min(int(max_bytes or 120000), 262144))
+    query = urlencode({"project_id": project_id, "path": path, "max_bytes": str(max_bytes)})
+    return _branch_factory_get(
+        office_id,
+        f"/v1/factory/artifacts?{query}",
+        timeout_s=20.0,
+        max_bytes=max_bytes + 4096,
+    )
+
+
+@mcp.tool()
+def openclaw_factory_artifact_put(
+    project_id: str,
+    path: str,
+    content: str,
+    office_id: str = "sicilia",
+    produced_by: str = "zeus",
+    description: str = "",
+    overwrite: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Write a Markdown feedback/evidence artifact into a Factory project."""
+    office_id = str(office_id or "sicilia").strip().lower()
+    project_id = str(project_id or "").strip()
+    path = str(path or "").strip()
+    content = str(content or "")
+    produced_by = str(produced_by or "zeus").strip() or "zeus"
+    if not project_id:
+        return {"ok": False, "error": "project_id is required"}
+    if not path:
+        return {"ok": False, "error": "path is required"}
+    if not path.lower().endswith(".md"):
+        return {"ok": False, "error": "only .md artifacts are supported"}
+    if not content.strip():
+        return {"ok": False, "error": "content is required"}
+    payload = {
+        "project_id": project_id,
+        "path": path,
+        "content": content,
+        "produced_by": produced_by,
+        "description": description or "Zeus feedback/evidence artifact.",
+        "overwrite": bool(overwrite),
+        "register": True,
+    }
+    if dry_run:
+        office, err = _office_or_error(office_id)
+        if err:
+            return err
+        assert office is not None
+        endpoint = str(office.get("delegate_endpoint") or "").strip()
+        base = endpoint.rsplit("/v1/delegate", 1)[0].rstrip("/") if endpoint else ""
+        return {
+            "ok": True,
+            "dry_run": True,
+            "office_id": office_id,
+            "endpoint": f"{base}/v1/factory/artifacts" if base else None,
+            "payload_preview": {
+                **payload,
+                "content": content[:500],
+                "content_bytes": len(content.encode("utf-8")),
+            },
+        }
+    return _branch_factory_post(
+        office_id,
+        "/v1/factory/artifacts",
+        payload,
+        timeout_s=20.0,
+    )
 
 
 def _branch_kanban_write(office_id: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2654,6 +2971,7 @@ def openclaw_factory_project_request(
             "zeus_kanban": zeus_kanban,
             "intervention": intervention,
         }
+    initial_work_order_id = _factory_initial_delegation_work_order_id(work_orders)
     task_spec = _task_spec(workflow_run_id or "unknown", sprint_id, work_orders)
     metadata = {
         **metadata,
@@ -2662,10 +2980,18 @@ def openclaw_factory_project_request(
         "clone_url": repo_preflight.get("clone_url"),
         "default_branch": repo_preflight.get("default_branch"),
         "workflow_run_id": workflow_run_id,
+        "work_order_id": initial_work_order_id,
+        "delegation_context": {
+            "target_office_id": "sicilia",
+            "target_agent_id": "leo-orquestador",
+            "initial_work_order_id": initial_work_order_id,
+            "sprint_id": sprint_id,
+        },
         "orchestration": {
             "api_url": _orchestration_base_url(),
             "workflow_run_id": workflow_run_id,
             "sprint_id": sprint_id,
+            "initial_work_order_id": initial_work_order_id,
             "kanban_projection_path": f"/v1/workflow-runs/{workflow_run_id}/kanban",
             "work_order_ids": [
                 item.get("work_order_id")
