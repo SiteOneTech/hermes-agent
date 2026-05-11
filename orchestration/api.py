@@ -162,6 +162,14 @@ class InterventionRequest(BaseModel):
     work_order_id: str | None = None
 
 
+class ResolveInterventionRequest(BaseModel):
+    actor: str = "zeus"
+    reason: str
+    outcome: str = "resolved"
+    notes: str = ""
+    work_order_id: str | None = None
+
+
 class WatchdogRunRequest(BaseModel):
     actor: str = "zeus-watchdog"
 
@@ -660,6 +668,33 @@ def request_intervention(
     return {
         "event_id": event.event_id,
         "event_type": event.event_type,
+        "kanban": service.get_kanban_projection(workflow_run_id),
+    }
+
+
+@router.post("/workflow-runs/{workflow_run_id}/interventions/resolve")  # type: ignore[union-attr]
+def resolve_intervention(
+    workflow_run_id: str,
+    body: ResolveInterventionRequest,
+    service: OrchestrationService = Depends(_get_service),
+) -> dict[str, Any]:
+    try:
+        event = service.resolve_zeus_intervention(
+            workflow_run_id=workflow_run_id,
+            actor=body.actor,
+            reason=body.reason,
+            outcome=body.outcome,
+            notes=body.notes,
+            work_order_id=body.work_order_id,
+        )
+    except OrchestrationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "event_id": event.event_id,
+        "event_type": event.event_type,
+        "workflow_run": _workflow_run_payload(
+            service.get_workflow_run(workflow_run_id)
+        ),
         "kanban": service.get_kanban_projection(workflow_run_id),
     }
 

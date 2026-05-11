@@ -308,3 +308,42 @@ def test_watchdog_marks_timeout_and_requests_zeus_intervention():
     assert run.status.value == "blocked"
     assert "work_order.timeout_detected" in [event.event_type for event in timeline]
     assert "zeus.intervention_required" in [event.event_type for event in timeline]
+
+
+def test_resolve_zeus_intervention_unblocks_run_and_preserves_history():
+    service = make_service()
+    run = service.create_workflow_run(
+        workflow_definition_id="software.simple_website.fast_lane",
+        workflow_version="1.0.0",
+        title="Blocked run",
+        created_by="zeus",
+    )
+    service.request_zeus_intervention(
+        workflow_run_id=run.workflow_run_id,
+        reason="Repository was missing.",
+        actor="zeus",
+        action="blocked",
+        notes="Create the repo before retry.",
+    )
+
+    blocked = service.get_workflow_run(run.workflow_run_id)
+    assert blocked.status.value == "blocked"
+
+    service.resolve_zeus_intervention(
+        workflow_run_id=run.workflow_run_id,
+        actor="zeus",
+        reason="Repository exists and retry completed.",
+        outcome="resolved",
+        notes="Retry produced commit evidence.",
+    )
+
+    resolved = service.get_workflow_run(run.workflow_run_id)
+    timeline = service.get_timeline(run.workflow_run_id)
+
+    assert resolved.status.value == "active"
+    assert resolved.metadata["last_intervention_required"] is None
+    assert (
+        resolved.metadata["resolved_interventions"][0]["reason"]
+        == "Repository was missing."
+    )
+    assert "zeus.intervention_resolved" in [event.event_type for event in timeline]

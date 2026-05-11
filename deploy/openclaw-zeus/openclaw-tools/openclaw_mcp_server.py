@@ -2335,6 +2335,36 @@ def openclaw_orchestration_intervention(
 
 
 @mcp.tool()
+def openclaw_orchestration_resolve_intervention(
+    workflow_run_id: str,
+    reason: str,
+    outcome: str = "resolved",
+    work_order_id: str = "",
+    notes: str = "",
+) -> dict[str, Any]:
+    """Resolve an active Zeus intervention once the blocking cause has been corrected."""
+    workflow_run_id = str(workflow_run_id or "").strip()
+    if not workflow_run_id:
+        return {"ok": False, "error": "workflow_run_id is required"}
+    reason = str(reason or "").strip()
+    if not reason:
+        return {"ok": False, "error": "reason is required"}
+    payload = {
+        "actor": "zeus",
+        "reason": reason,
+        "outcome": str(outcome or "resolved").strip(),
+        "work_order_id": str(work_order_id or "").strip() or None,
+        "notes": str(notes or "").strip(),
+    }
+    return _orchestration_api_request(
+        "POST",
+        f"/v1/workflow-runs/{quote(workflow_run_id)}/interventions/resolve",
+        payload={key: value for key, value in payload.items() if value is not None},
+        timeout_s=20.0,
+    )
+
+
+@mcp.tool()
 def openclaw_factory_project_request(
     title: str,
     request: str,

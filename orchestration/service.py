@@ -814,6 +814,57 @@ class OrchestrationService:
         self.refresh_kanban_projection(workflow_run_id)
         return event
 
+    def resolve_zeus_intervention(
+        self,
+        *,
+        workflow_run_id: str,
+        actor: str = "zeus",
+        reason: str,
+        outcome: str = "resolved",
+        work_order_id: str | None = None,
+        notes: str = "",
+    ) -> WorkflowEvent:
+        run = self._repo.get_workflow_run(workflow_run_id)
+        previous = run.metadata.get("last_intervention_required")
+        if not previous:
+            raise OrchestrationError("No active Zeus intervention to resolve")
+
+        resolved_item = {
+            **previous,
+            "resolved_by": actor,
+            "resolved_reason": reason,
+            "resolved_outcome": outcome,
+            "resolved_notes": notes,
+            "resolved_at": utc_now().isoformat(),
+        }
+        existing_resolved = run.metadata.get("resolved_interventions")
+        resolved = list(existing_resolved) if isinstance(existing_resolved, list) else []
+        resolved.append(resolved_item)
+        run.metadata = {
+            **run.metadata,
+            "last_intervention_required": None,
+            "resolved_interventions": resolved[-20:],
+        }
+        if run.status == WorkflowRunStatus.BLOCKED:
+            run.status = WorkflowRunStatus.ACTIVE
+        run.updated_at = utc_now()
+        self._repo.update_workflow_run(run)
+        event = self._append_event(
+            workflow_run_id,
+            "zeus.intervention_resolved",
+            actor,
+            {
+                "reason": reason,
+                "outcome": outcome,
+                "notes": notes,
+                "previous_intervention": previous,
+                "work_order_id": work_order_id,
+            },
+            work_order_id=work_order_id,
+        )
+        self.refresh_kanban_projection(workflow_run_id)
+        return event
+
     def run_watchdog(self, *, actor: str = "zeus-watchdog") -> dict[str, Any]:
         now = utc_now()
         timed_out: list[dict[str, Any]] = []
