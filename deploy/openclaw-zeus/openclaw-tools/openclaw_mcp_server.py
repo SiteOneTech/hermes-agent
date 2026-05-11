@@ -41,6 +41,7 @@ DEFAULT_ZEUS_KANBAN_DB = Path.home() / ".hermes" / "kanban.db"
 MAX_DEADLINE_S = 600
 DEFAULT_TIMEOUT_S = 8
 DEFAULT_REGISTRY_API_URL = "http://openclaw-hq:8781"
+DEFAULT_ORCHESTRATION_API_URL = "http://127.0.0.1:8650"
 DEFAULT_NOTION_VERSION = "2022-06-28"
 FACTORY_CANONICAL_STAGES = (
     ("idea", "IDEA", "leo-orquestador", "done"),
@@ -72,25 +73,25 @@ def _ensure_dotenv_loaded() -> None:
         return
     _DOTENV_LOADED = True
     hermes_home = Path(os.getenv("HERMES_HOME") or (Path.home() / ".hermes")).expanduser()
-    dotenv = hermes_home / ".env"
-    if not dotenv.exists():
-        return
-    for raw_line in dotenv.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
+    for dotenv in (hermes_home / ".env", hermes_home / "orchestration.env"):
+        if not dotenv.exists():
             continue
-        if line.startswith("export "):
-            line = line[len("export ") :].strip()
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key or key in os.environ:
-            continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        os.environ[key] = value
+        for raw_line in dotenv.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key or key in os.environ:
+                continue
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            os.environ[key] = value
 
 
 def _env(name: str, default: str = "") -> str:
@@ -160,6 +161,42 @@ def _factory_project_id(title: str, project_slug: str = "", project_id: str = ""
     pid = _canonical_factory_pid(project_id, slug)
     repo_name = f"factory-su-{slug}"
     return pid, slug, repo_name
+
+
+def _factory_backlog_items(pid: str, title: str, complexity: str) -> list[dict[str, Any]]:
+    timeout_by_complexity = {
+        "simple": 1800,
+        "standard": 3600,
+        "complex": 7200,
+    }
+    timeout_seconds = timeout_by_complexity.get(complexity, 3600)
+    items: list[dict[str, Any]] = []
+    for index, (stage_key, stage_name, owner, _status) in enumerate(FACTORY_CANONICAL_STAGES, start=1):
+        items.append(
+            {
+                "backlog_item_id": f"{stage_key}-{index:02d}",
+                "task": (
+                    f"{stage_name}: execute the canonical Factory stage for {title}. "
+                    f"Record owner evidence, artifact references and agent observability logs."
+                ),
+                "owner_role": owner,
+                "required_outputs": [
+                    f"{stage_key}_evidence",
+                    "artifact_ref",
+                    "agent_log_ref",
+                    "gate_status",
+                ],
+                "inputs": {
+                    "project_id": pid,
+                    "stage": stage_name,
+                    "stage_key": stage_key,
+                },
+                "timeout_seconds": timeout_seconds,
+                "expected_first_heartbeat_seconds": min(timeout_seconds, 900),
+                "retry_policy": {"max_attempts": 1},
+            }
+        )
+    return items
 
 
 def _zeus_kanban_upsert(
@@ -562,6 +599,40 @@ def _http_json_request(
             "error": str(exc),
             "duration_s": round(time.monotonic() - started, 3),
         }
+
+
+def _orchestration_base_url() -> str:
+    return str(
+        _env("HERMES_ORCHESTRATION_API_URL")
+        or DEFAULT_ORCHESTRATION_API_URL
+    ).rstrip("/")
+
+
+def _orchestration_api_request(
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+    timeout_s: float = 15.0,
+) -> dict[str, Any]:
+    token = _env("HERMES_ORCHESTRATION_API_KEY")
+    if not token:
+        return {"ok": False, "error": "missing HERMES_ORCHESTRATION_API_KEY"}
+    url = f"{_orchestration_base_url()}/{path.lstrip('/')}"
+    result = _http_json_request(
+        method=method,
+        url=url,
+        payload=payload,
+        bearer_token=token,
+        timeout_s=timeout_s,
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "endpoint": url,
+        "http_status": result.get("status"),
+        "duration_s": result.get("duration_s"),
+        "result": result.get("body_json"),
+        "error": result.get("error"),
+    }
 
 
 def _notion_state_path() -> Path:
@@ -1712,6 +1783,135 @@ def openclaw_notion_runbook() -> dict[str, Any]:
 
 
 @mcp.tool()
+def openclaw_orchestration_workflow_definitions() -> dict[str, Any]:
+    """List the durable workflow packs available to Zeus."""
+    return _orchestration_api_request("GET", "/v1/workflow-definitions")
+
+
+@mcp.tool()
+def openclaw_orchestration_start_factory_project(
+    title: str,
+    objective: str,
+    project_id: str,
+    branch_id: str = "sicilia",
+    complexity: str = "standard",
+    autonomy_level: str = "L2",
+    sprint_goal: str = "",
+    backlog_json: str = "",
+) -> dict[str, Any]:
+    """Create a canonical Factory Scrum workflow run in Hermes Orchestration Core."""
+    title = str(title or "").strip()
+    objective = str(objective or "").strip()
+    project_id = str(project_id or "").strip()
+    if not title:
+        return {"ok": False, "error": "title is required"}
+    if not objective:
+        return {"ok": False, "error": "objective is required"}
+    if not project_id:
+        return {"ok": False, "error": "project_id is required"}
+    backlog_items: list[dict[str, Any]] = []
+    if str(backlog_json or "").strip():
+        try:
+            parsed = json.loads(backlog_json)
+        except json.JSONDecodeError as exc:
+            return {"ok": False, "error": f"invalid backlog_json: {exc}"}
+        if not isinstance(parsed, list):
+            return {"ok": False, "error": "backlog_json must be a JSON array"}
+        backlog_items = [item for item in parsed if isinstance(item, dict)]
+    payload = {
+        "title": title,
+        "objective": objective,
+        "created_by": "zeus",
+        "project_id": project_id,
+        "branch_id": str(branch_id or "sicilia").strip().lower(),
+        "complexity": str(complexity or "standard").strip().lower(),
+        "autonomy_level": str(autonomy_level or "L2").strip().upper(),
+        "sprint_goal": str(sprint_goal or "").strip(),
+        "backlog_items": backlog_items,
+    }
+    return _orchestration_api_request(
+        "POST",
+        "/v1/workflows/factory-scrum",
+        payload=payload,
+        timeout_s=20.0,
+    )
+
+
+@mcp.tool()
+def openclaw_orchestration_status(workflow_run_id: str) -> dict[str, Any]:
+    """Read the canonical status, steps, work orders, timeline and Kanban projection for one workflow."""
+    workflow_run_id = str(workflow_run_id or "").strip()
+    if not workflow_run_id:
+        return {"ok": False, "error": "workflow_run_id is required"}
+    encoded = quote(workflow_run_id)
+    run = _orchestration_api_request("GET", f"/v1/workflow-runs/{encoded}")
+    steps = _orchestration_api_request("GET", f"/v1/workflow-runs/{encoded}/steps")
+    work_orders = _orchestration_api_request("GET", f"/v1/workflow-runs/{encoded}/work-orders")
+    kanban = _orchestration_api_request("GET", f"/v1/workflow-runs/{encoded}/kanban")
+    timeline = _orchestration_api_request("GET", f"/v1/workflow-runs/{encoded}/timeline")
+    return {
+        "ok": all(item.get("ok") for item in (run, steps, work_orders, kanban, timeline)),
+        "workflow_run_id": workflow_run_id,
+        "run": run,
+        "steps": steps,
+        "work_orders": work_orders,
+        "kanban": kanban,
+        "timeline": timeline,
+    }
+
+
+@mcp.tool()
+def openclaw_orchestration_kanban(workflow_run_id: str) -> dict[str, Any]:
+    """Read the derived Kanban projection for one workflow. This is a view, not the source of truth."""
+    workflow_run_id = str(workflow_run_id or "").strip()
+    if not workflow_run_id:
+        return {"ok": False, "error": "workflow_run_id is required"}
+    return _orchestration_api_request(
+        "GET",
+        f"/v1/workflow-runs/{quote(workflow_run_id)}/kanban",
+    )
+
+
+@mcp.tool()
+def openclaw_orchestration_watchdog(actor: str = "zeus-watchdog") -> dict[str, Any]:
+    """Run active supervision: mark stale work orders timed out and request Zeus intervention."""
+    return _orchestration_api_request(
+        "POST",
+        "/v1/watchdog/run",
+        payload={"actor": str(actor or "zeus-watchdog").strip()},
+        timeout_s=20.0,
+    )
+
+
+@mcp.tool()
+def openclaw_orchestration_intervention(
+    workflow_run_id: str,
+    reason: str,
+    action: str = "inspect",
+    work_order_id: str = "",
+) -> dict[str, Any]:
+    """Record a required Zeus intervention against a workflow or work order."""
+    workflow_run_id = str(workflow_run_id or "").strip()
+    if not workflow_run_id:
+        return {"ok": False, "error": "workflow_run_id is required"}
+    reason = str(reason or "").strip()
+    if not reason:
+        return {"ok": False, "error": "reason is required"}
+    payload = {
+        "actor": "zeus",
+        "reason": reason,
+        "action": str(action or "inspect").strip(),
+        "work_order_id": str(work_order_id or "").strip() or None,
+    }
+    return _orchestration_api_request(
+        "POST",
+        f"/v1/workflow-runs/{quote(workflow_run_id)}/interventions",
+        payload={key: value for key, value in payload.items() if value is not None},
+        timeout_s=20.0,
+    )
+
+
+@mcp.tool()
 def openclaw_factory_project_request(
     title: str,
     request: str,
@@ -1725,8 +1925,8 @@ def openclaw_factory_project_request(
     """Submit software/product development work through the canonical Factory route.
 
     This is the preferred tool for web, app, backend, design-to-code, preview,
-    repo, QA, or software-delivery work. It creates the branch Kanban project
-    and canonical stage tasks before delegating asynchronously to Leo.
+    repo, QA, or software-delivery work. It creates a durable workflow run in
+    Hermes Orchestration Core before delegating asynchronously to Leo.
     """
     title = str(title or "").strip()
     request = str(request or "").strip()
@@ -1767,43 +1967,39 @@ def openclaw_factory_project_request(
         "stage_order": [stage[1] for stage in FACTORY_CANONICAL_STAGES],
     }
 
-    project_task = {
-        "id": pid,
-        "branch": "sicilia",
+    backlog_items = _factory_backlog_items(pid, title, complexity)
+    orchestration_request = {
         "title": title,
-        "description": request[:2000],
-        "status": "claimed",
-        "priority": 2 if complexity in {"standard", "complex"} else 3,
-        "agent_id": "leo-orquestador",
-        "role": "factory-coordinator",
+        "objective": request,
+        "created_by": "zeus",
         "project_id": pid,
-        "initiative_id": pid,
-        "source": "zeus_factory_project_request",
-        "metadata": metadata,
+        "branch_id": "sicilia",
+        "complexity": complexity,
+        "autonomy_level": autonomy_level,
+        "sprint_goal": f"Deliver the first governed increment for {title}",
+        "backlog_items": backlog_items,
     }
-    stage_tasks = [
-        {
-            "id": f"{pid}:{stage_key}",
-            "branch": "sicilia",
-            "title": f"{pid} {stage_name}",
-            "description": f"Canonical Factory stage for {title}. Owner: {owner}.",
-            "status": status,
-            "priority": 2,
-            "agent_id": owner,
-            "role": "factory-stage-owner",
-            "project_id": pid,
-            "initiative_id": pid,
-            "parent_id": pid,
-            "source": "zeus_factory_project_request",
-            "metadata": {**metadata, "stage": stage_name, "stage_key": stage_key},
-        }
-        for stage_key, stage_name, owner, status in FACTORY_CANONICAL_STAGES
-    ]
-    task_spec = "\n".join(
-        [
+
+    def _task_spec(
+        workflow_run_id: str = "pending",
+        sprint_id: str = "sprint-001",
+        work_orders: list[dict[str, Any]] | None = None,
+    ) -> str:
+        work_order_lines = []
+        for item in work_orders or []:
+            work_order_lines.append(
+                "- {work_order_id} [{owner_role}] {task}".format(
+                    work_order_id=item.get("work_order_id", ""),
+                    owner_role=item.get("owner_role", ""),
+                    task=str(item.get("task", ""))[:180],
+                )
+            )
+        lines = [
             "TASKSPEC_CANONICAL_FACTORY_PROJECT",
             f"Project ID: {pid}",
             f"Project slug: {slug}",
+            f"Workflow run ID: {workflow_run_id}",
+            f"Sprint ID: {sprint_id}",
             f"Title: {title}",
             f"Complexity: {complexity}",
             f"Autonomy level: {autonomy_level}",
@@ -1816,23 +2012,26 @@ def openclaw_factory_project_request(
             "",
             "Mandatory route:",
             "1. Do not satisfy this by creating a loose file under /home or by only answering in chat.",
-            "2. Use the existing branch Kanban project and stage tasks created by Zeus for this project_id.",
-            "3. Follow IDEA -> DISCOVERY -> PRODUCT_SHAPING -> ARCHITECTURE_REVIEW -> READY_FOR_SPRINT -> EXECUTION -> CODE_REVIEW -> QA_VALIDATION -> SECURITY_REVIEW -> ZEUS_ACCEPTANCE -> RELEASE -> RETROSPECTIVE -> MEMORY_UPDATE.",
-            "4. Create or identify the private GitHub repo named factory-su-<project-slug>.",
-            "5. Produce project docs/evidence: PRD, architecture brief, sprint plan, execution log, code review, QA report, Browser QA/Playwright report, security review, release handoff, retrospective, metrics.",
-            "6. Publish user-facing work to the KIDU Preview Lab unless Zeus/Jean explicitly says not to publish.",
-            "7. Record Notion human-readable evidence through Zeus or the approved writer.",
-            "8. Notion must use the standard Factory project template: Project page under Projects, child pages for Sprint, Stage Gate Board, Execution Trace, QA Evidence and Release, Retrospective and Memory, plus board mirror pages.",
-            "9. Metrics must record started_at, completed_at, total duration, duration by state when available, engine attempts, QA result, Playwright result, re-gate count, and preview deploy time.",
-            "10. When the work is complete enough for Jean review, Zeus must send Jean an email completion report with status, preview URL, repo URL, Notion URL, duration, and next decision.",
-            "11. If any QA/security/release gate fails, mark REGATE_REQUIRED and do not present the work as accepted.",
-            "12. Report progress asynchronously; Zeus will poll branch Kanban and delegation status.",
-            "13. Leo Orquestador must orchestrate only: create role-owned work orders, route engines, record blockers, and assign the next owner.",
-            "14. Leo must not write or close specialist deliverables for Vera, Mia, Nico, Iris, Bruno, Tina, Belen, Sofia, Rene, or Dario.",
-            "15. Every successful stage must include the responsible owner, matching work_order_id, artifact paths, and gate result in FactoryRun.",
-            "16. Exit code 0 or a good narrative is not completion; success without owner evidence must be marked partial/blocked.",
+            "2. Treat Hermes Orchestration Core as the source of truth for status, gates, retries, timeouts and work-order ownership.",
+            "3. Treat every Kanban board as a derived visibility projection; do not hand-edit it as execution state.",
+            "4. Use the workflow_run_id and matching work_order_id in every artifact, callback, branch report and observability log.",
+            "5. Follow IDEA -> DISCOVERY -> PRODUCT_SHAPING -> ARCHITECTURE_REVIEW -> READY_FOR_SPRINT -> EXECUTION -> CODE_REVIEW -> QA_VALIDATION -> SECURITY_REVIEW -> ZEUS_ACCEPTANCE -> RELEASE -> RETROSPECTIVE -> MEMORY_UPDATE.",
+            "6. Create or identify the private GitHub repo named factory-su-<project-slug>.",
+            "7. Produce project docs/evidence: PRD, architecture brief, sprint plan, execution log, code review, QA report, Browser QA/Playwright report, security review, release handoff, retrospective, metrics.",
+            "8. Publish user-facing work to the KIDU Preview Lab unless Zeus/Jean explicitly says not to publish.",
+            "9. Record Notion human-readable evidence through Zeus or the approved writer.",
+            "10. Metrics must record started_at, completed_at, total duration, duration by state when available, engine attempts, QA result, Playwright result, re-gate count, and preview deploy time.",
+            "11. When the work is complete enough for Jean review, Zeus must send Jean an email completion report with status, preview URL, repo URL, Notion URL, duration, and next decision.",
+            "12. If any QA/security/release gate fails, mark REGATE_REQUIRED and do not present the work as accepted.",
+            "13. Report progress asynchronously; Zeus will inspect orchestration status, watchdog events and delegation status.",
+            "14. Leo Orquestador must orchestrate only: create role-owned work orders, route engines, record blockers, and assign the next owner.",
+            "15. Leo must not write or close specialist deliverables for Vera, Mia, Nico, Iris, Bruno, Tina, Belen, Sofia, Rene, or Dario.",
+            "16. Every successful stage must include the responsible owner, matching work_order_id, artifact paths, and gate result in FactoryRun.",
+            "17. Exit code 0 or a good narrative is not completion; success without owner evidence must be marked partial/blocked.",
         ]
-    )
+        if work_order_lines:
+            lines.extend(["", "Canonical work orders:", *work_order_lines])
+        return "\n".join(lines)
 
     if dry_run:
         return {
@@ -1842,59 +2041,52 @@ def openclaw_factory_project_request(
             "project_slug": slug,
             "repo_name": repo_name,
             "preview_url_expected": preview_url,
-            "kanban_project_task": project_task,
-            "kanban_stage_tasks": stage_tasks,
+            "orchestration_request": orchestration_request,
             "zeus_kanban_task_id": f"zeus-{pid}",
-            "delegation_task_spec": task_spec,
+            "delegation_task_spec": _task_spec(),
         }
 
-    kanban_snapshot = _branch_kanban_read("sicilia", "/v1/kanban")
-    if not kanban_snapshot.get("ok"):
+    orchestration = _orchestration_api_request(
+        "POST",
+        "/v1/workflows/factory-scrum",
+        payload=orchestration_request,
+        timeout_s=20.0,
+    )
+    if not orchestration.get("ok"):
         return {
             "ok": False,
-            "error": "branch Kanban snapshot failed; refusing to delegate untracked Factory work",
+            "error": "Hermes Orchestration Core rejected the Factory workflow; refusing to delegate untracked work",
             "project_id": pid,
             "project_slug": slug,
-            "snapshot": kanban_snapshot,
+            "orchestration": orchestration,
         }
-    existing_task_ids = _kanban_snapshot_task_ids(kanban_snapshot.get("result"))
-    kanban_results = []
-    if pid not in existing_task_ids:
-        kanban_results.append(_branch_kanban_write("sicilia", "/v1/kanban/tasks", project_task))
-    for stage_task in stage_tasks:
-        if stage_task["id"] in existing_task_ids:
-            continue
-        kanban_results.append(_branch_kanban_write("sicilia", "/v1/kanban/tasks", stage_task))
-    lifecycle_event = {
-        "event_type": "factory_project_resumed" if pid in existing_task_ids else "factory_project_submitted",
-        "task_id": pid,
-        "branch": "sicilia",
-        "agent_id": "leo-orquestador" if pid not in existing_task_ids else "zeus",
-        "message": (
-            f"Zeus resumed canonical Factory project: {title}"
-            if pid in existing_task_ids
-            else f"Zeus submitted canonical Factory project: {title}"
-        ),
-        "metadata": metadata,
+
+    orchestration_body = orchestration.get("result") if isinstance(orchestration.get("result"), dict) else {}
+    workflow_run = orchestration_body.get("workflow_run") if isinstance(orchestration_body, dict) else {}
+    sprint = orchestration_body.get("sprint") if isinstance(orchestration_body, dict) else {}
+    if not isinstance(workflow_run, dict):
+        workflow_run = {}
+    if not isinstance(sprint, dict):
+        sprint = {}
+    workflow_run_id = str(workflow_run.get("workflow_run_id") or "")
+    sprint_id = str(sprint.get("sprint_id") or "sprint-001")
+    work_orders = sprint.get("work_orders") if isinstance(sprint.get("work_orders"), list) else []
+    task_spec = _task_spec(workflow_run_id or "unknown", sprint_id, work_orders)
+    metadata = {
+        **metadata,
+        "workflow_run_id": workflow_run_id,
+        "orchestration": {
+            "api_url": _orchestration_base_url(),
+            "workflow_run_id": workflow_run_id,
+            "sprint_id": sprint_id,
+            "kanban_projection_path": f"/v1/workflow-runs/{workflow_run_id}/kanban",
+            "work_order_ids": [
+                item.get("work_order_id")
+                for item in work_orders
+                if isinstance(item, dict) and item.get("work_order_id")
+            ],
+        },
     }
-    if pid not in existing_task_ids:
-        lifecycle_event["status"] = "claimed"
-    kanban_results.append(
-        _branch_kanban_write(
-            "sicilia",
-            "/v1/kanban/events",
-            lifecycle_event,
-        )
-    )
-    failed_writes = [item for item in kanban_results if not item.get("ok")]
-    if failed_writes:
-        return {
-            "ok": False,
-            "error": "branch Kanban write failed; refusing to delegate untracked Factory work",
-            "project_id": pid,
-            "failed_writes": failed_writes[:5],
-            "kanban_results": kanban_results,
-        }
 
     notion_event = openclaw_notion_log_event(
         title=f"{pid} submitted to Factory",
@@ -1909,9 +2101,9 @@ def openclaw_factory_project_request(
         body=(
             f"Strategic oversight for Factory project {pid}. "
             f"Branch: sicilia. Expected repo: {repo_name}. Expected preview: {preview_url}. "
-            "Zeus tracks intent, blockers, acceptance, and Jean-level decisions here; "
-            "Sicilia FactoryRun and branch Kanban remain operational truth. "
-            "Use openclaw_branch_report.factory_feedback for blockers and gate approvals."
+            f"Hermes workflow_run_id: {workflow_run_id}. "
+            "Hermes Orchestration Core is the execution truth; Kanban is only a visibility mirror. "
+            "Use openclaw_orchestration_status and openclaw_orchestration_watchdog for supervision."
         ),
         status="running",
         priority=2 if complexity in {"standard", "complex"} else 3,
@@ -1921,8 +2113,8 @@ def openclaw_factory_project_request(
             "repo_name": repo_name,
             "preview_url_expected": preview_url,
             "canonical_factory_project": True,
-            "branch_kanban_project_id": pid,
-            "factory_feedback_channel": "openclaw_branch_report.factory_feedback",
+            "workflow_run_id": workflow_run_id,
+            "orchestration_kanban_projection": f"/v1/workflow-runs/{workflow_run_id}/kanban",
         },
     )
     delegation = openclaw_delegate_task(
@@ -1936,23 +2128,43 @@ def openclaw_factory_project_request(
         initiative_id=pid,
         metadata_json=json.dumps(metadata, ensure_ascii=True, sort_keys=True),
     )
+    intervention = None
+    if not delegation.get("ok") and workflow_run_id:
+        intervention = _orchestration_api_request(
+            "POST",
+            f"/v1/workflow-runs/{quote(workflow_run_id)}/interventions",
+            payload={
+                "actor": "zeus",
+                "reason": f"Delegation to Sicilia failed: {delegation.get('error')}",
+                "action": "blocked",
+            },
+            timeout_s=20.0,
+        )
     return {
         "ok": bool(delegation.get("ok")),
         "project_id": pid,
         "project_slug": slug,
         "repo_name": repo_name,
         "preview_url_expected": preview_url,
-        "kanban_created": True,
-        "kanban_resumed_existing": pid in existing_task_ids,
-        "kanban_snapshot_task_count": len(existing_task_ids),
-        "kanban_results_count": len(kanban_results),
+        "canonical_state": "hermes_orchestration_core",
+        "workflow_run_id": workflow_run_id,
+        "sprint_id": sprint_id,
+        "orchestration": orchestration,
         "notion_event": notion_event,
         "zeus_kanban": zeus_kanban,
         "delegation": delegation,
+        "intervention": intervention,
         "next_poll": {
-            "tool": "openclaw_delegation_status",
-            "office_id": "sicilia",
-            "task_id": delegation.get("task_id"),
+            "workflow": {
+                "tool": "openclaw_orchestration_status",
+                "workflow_run_id": workflow_run_id,
+            },
+            "watchdog": {"tool": "openclaw_orchestration_watchdog"},
+            "delegation": {
+                "tool": "openclaw_delegation_status",
+                "office_id": "sicilia",
+                "task_id": delegation.get("task_id"),
+            },
         },
     }
 

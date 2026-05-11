@@ -34,7 +34,7 @@ This inventory is operational guidance as of 2026-05-07 and should be verified w
 
 Zeus should use `openclaw_identity`, `openclaw_list_offices`, `openclaw_office_status`, and `openclaw_delegate_task` when discussing offices, agents, Factory, Sicilia, or cross-node delegation. A raw GET returning HTTP 501 on `/v1/delegate` is not a service failure; that endpoint is POST-only and should be tested through `openclaw_delegate_task`.
 
-For software delivery work, Zeus should prefer `openclaw_factory_project_request` over generic delegation. That tool creates the Sicilia branch Kanban project and canonical stage tasks before delegating async to `leo-orquestador`. Use it for landing pages, websites, apps, backends, integrations, UI work, public previews, repos, QA-driven delivery, and product prototypes.
+For software delivery work, Zeus should prefer `openclaw_factory_project_request` over generic delegation. That tool creates the canonical Hermes Orchestration Core workflow before delegating async to `leo-orquestador`. Use it for landing pages, websites, apps, backends, integrations, UI work, public previews, repos, QA-driven delivery, and product prototypes.
 
 ## Zeus Intake Pattern
 
@@ -91,26 +91,28 @@ The canonical Factory-side contract lives in:
 - `docs/operating-model/ZEUS-FACTORY-OPERATING-CONTRACT.md`
 - `policies/factory-workflow-policy.yaml`
 
-## Branch Kanban Pattern
+## Orchestration And Kanban Pattern
 
-Each OpenClaw office can keep its own local operational Kanban. That board is the source of truth for local execution: assigned agent, current status, blocked work, recent events, QA notes, and delivery evidence.
+Hermes Orchestration Core is the source of truth for execution state: workflow runs, step runs, work orders, gates, callbacks, timeouts, interventions, artifacts, agent logs, and events.
+
+Each OpenClaw office can keep its own local operational Kanban, but the board is a derived view for scanning progress. It is not the place where execution state is changed. If the Kanban and orchestration differ, trust orchestration and regenerate or reconcile the projection.
 
 Zeus keeps a separate Hermes Kanban for strategic oversight. Zeus' board should track initiatives, decisions, cross-office blockers, risks, high-level deliverables, and Zeus acceptance. Zeus should not duplicate every local execution ticket unless it affects Jean, strategy, scope, risk, or final acceptance.
 
 Runtime rule:
 
-1. When asked about an office, Factory, branch agents, or cross-node progress, call `openclaw_branch_report(<office_id>)`.
-2. Read `report.kanban` from the branch `GET /v1/delegate` response.
-3. Use the branch summary to update or reason over Zeus' strategic Kanban.
-4. Treat branch Kanban as local execution truth and Zeus Kanban as portfolio/decision truth.
+1. When asked about a Factory workflow, call `openclaw_orchestration_status(<workflow_run_id>)`.
+2. Read the derived board through `openclaw_orchestration_kanban(<workflow_run_id>)` only for visual status.
+3. Run `openclaw_orchestration_watchdog()` when a work order is stale, silent, timed out, or suspicious.
+4. Use `openclaw_branch_report(<office_id>)` to inspect local office health and evidence, not to override workflow state.
+5. Treat Zeus Kanban and Notion as portfolio/reporting mirrors.
 
 For new Factory projects, the first operational write must happen before delegation:
 
-1. Create the branch project card with `project_id`.
-2. Create stage cards for IDEA, DISCOVERY, PRODUCT_SHAPING, ARCHITECTURE_REVIEW, READY_FOR_SPRINT, EXECUTION, CODE_REVIEW, QA_VALIDATION, SECURITY_REVIEW, ZEUS_ACCEPTANCE, RELEASE, RETROSPECTIVE, and MEMORY_UPDATE.
-3. Delegate to `leo-orquestador` asynchronously with that `project_id`.
-4. Poll `openclaw_delegation_status` and `openclaw_branch_report` instead of waiting inside the chat turn.
-5. If both differ, refresh the branch report before making claims.
+1. Create the Hermes workflow run and first sprint/work orders.
+2. Delegate to `leo-orquestador` asynchronously with `project_id`, `workflow_run_id`, `sprint_id`, and work-order metadata.
+3. Poll `openclaw_orchestration_status`, `openclaw_orchestration_watchdog`, and `openclaw_delegation_status` instead of waiting inside the chat turn.
+4. If a delegation times out or fails, record Zeus intervention on the workflow and re-slice or reroute from that state.
 
 ## OpenHands Position
 

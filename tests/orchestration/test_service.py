@@ -28,6 +28,7 @@ def test_create_run_records_initial_step_and_event():
 
     assert run.workflow_run_id.startswith("wf_run_")
     assert run.current_step_id is not None
+    assert run.metadata["methodology"] == "fast_lane"
     timeline = service.get_timeline(run.workflow_run_id)
     assert [event.event_type for event in timeline] == ["workflow.run.created"]
 
@@ -153,3 +154,109 @@ def test_gate_rejects_wrong_reviewer():
         assert "reviewer mismatch" in str(exc)
     else:
         raise AssertionError("Expected reviewer mismatch")
+
+
+def test_factory_scrum_project_opens_sprint_and_projects_kanban():
+    service = make_service()
+
+    result = service.create_factory_scrum_project(
+        title="Factory sprint pilot",
+        objective="Validate Scrum orchestration cycle.",
+        created_by="zeus",
+        project_id="factory-sprint-pilot-001",
+        backlog_items=[
+            {
+                "task": "Create sprint plan.",
+                "owner_role": "ana-pmo",
+                "required_outputs": ["sprint_plan", "agent_log_ref"],
+                "timeout_seconds": 1200,
+            },
+            {
+                "task": "Run QA evidence.",
+                "owner_role": "tina-qa",
+                "required_outputs": ["qa_report", "agent_log_ref"],
+                "timeout_seconds": 1200,
+            },
+        ],
+    )
+
+    run = result["workflow_run"]
+    sprint = result["sprint"]
+    assert run.workflow_definition_id == "factory.scrum_project"
+    assert run.metadata["current_sprint_id"] == "sprint-001"
+    assert sprint is not None
+    assert len(sprint["work_orders"]) == 2
+
+    kanban = service.get_kanban_projection(run.workflow_run_id)
+    assert kanban["schema"] == "hermes.orchestration_kanban.v1"
+    assert kanban["summary"]["card_count"] == 1 + 2 + 2
+    assert kanban["summary"]["counts"]["backlog"] == 2
+    assert kanban["summary"]["counts"]["running"] == 2
+
+
+def test_close_sprint_records_review_and_retrospective():
+    service = make_service()
+    result = service.create_factory_scrum_project(
+        title="Close sprint pilot",
+        objective="Validate closeout.",
+        created_by="zeus",
+        project_id="factory-close-pilot-001",
+        backlog_items=[
+            {
+                "task": "Ship increment.",
+                "owner_role": "ciro-codex",
+                "required_outputs": ["commit_sha", "agent_log_ref"],
+            }
+        ],
+    )
+    work_order = result["sprint"]["work_orders"][0]
+    callback = WorkOrderCallback(
+        work_order_id=work_order.work_order_id,
+        attempt_id="attempt-close-1",
+        status=WorkOrderStatus.COMPLETED,
+        actor="ciro-codex",
+        commit_sha="abc123",
+    )
+
+    service.record_worker_callback(callback, idempotency_key="close:attempt-1")
+    closeout = service.close_sprint(
+        workflow_run_id=result["workflow_run"].workflow_run_id,
+        sprint_id="sprint-001",
+        actor="ana-pmo",
+        review_notes="Increment reviewed.",
+        retrospective_notes="Keep task envelopes small.",
+    )
+
+    assert closeout["unfinished_work_orders"] == []
+    timeline = service.get_timeline(result["workflow_run"].workflow_run_id)
+    assert "sprint.review_completed" in [event.event_type for event in timeline]
+    assert "sprint.retrospective_recorded" in [event.event_type for event in timeline]
+
+
+def test_watchdog_marks_timeout_and_requests_zeus_intervention():
+    service = make_service()
+    result = service.create_factory_scrum_project(
+        title="Timeout pilot",
+        objective="Validate active supervision.",
+        created_by="zeus",
+        project_id="factory-timeout-pilot-001",
+        backlog_items=[
+            {
+                "task": "Never heartbeat.",
+                "owner_role": "olga-openhands",
+                "timeout_seconds": 0,
+            }
+        ],
+    )
+
+    watchdog = service.run_watchdog(actor="zeus-watchdog")
+    assert watchdog["timed_out_count"] == 1
+    work_order_id = watchdog["timed_out"][0]["work_order_id"]
+    work_order = service._repo.get_work_order(work_order_id)
+    run = service.get_workflow_run(result["workflow_run"].workflow_run_id)
+    timeline = service.get_timeline(run.workflow_run_id)
+
+    assert work_order.status == WorkOrderStatus.TIMED_OUT
+    assert run.status.value == "blocked"
+    assert "work_order.timeout_detected" in [event.event_type for event in timeline]
+    assert "zeus.intervention_required" in [event.event_type for event in timeline]

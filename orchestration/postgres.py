@@ -113,6 +113,80 @@ class PostgresOrchestrationRepository:
         with psycopg.connect(self._database_url, row_factory=dict_row) as conn:
             yield conn
 
+    def upsert_workflow_definition(
+        self,
+        *,
+        workflow_definition_id: str,
+        domain: str,
+        display_name: str,
+        description: str,
+        workflow_version: str,
+        definition_json: dict,
+        status: str = "published",
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO workflow_definitions (
+                    workflow_definition_id, domain, display_name, description
+                ) VALUES (%s, %s, %s, %s)
+                ON CONFLICT (workflow_definition_id) DO UPDATE SET
+                    domain = excluded.domain,
+                    display_name = excluded.display_name,
+                    description = excluded.description,
+                    updated_at = now()
+                """,
+                (workflow_definition_id, domain, display_name, description),
+            )
+            conn.execute(
+                """
+                INSERT INTO workflow_versions (
+                    workflow_definition_id, workflow_version, definition_json,
+                    status, published_at
+                ) VALUES (%s, %s, %s, %s, now())
+                ON CONFLICT (workflow_definition_id, workflow_version) DO UPDATE SET
+                    definition_json = excluded.definition_json,
+                    status = excluded.status,
+                    published_at = COALESCE(workflow_versions.published_at, now())
+                """,
+                (
+                    workflow_definition_id,
+                    workflow_version,
+                    _json(definition_json),
+                    status,
+                ),
+            )
+            conn.commit()
+
+    def list_workflow_definitions(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT d.workflow_definition_id, d.domain, d.display_name,
+                       d.description, v.workflow_version, v.definition_json,
+                       v.status, v.published_at
+                FROM workflow_definitions d
+                JOIN workflow_versions v
+                  ON v.workflow_definition_id = d.workflow_definition_id
+                ORDER BY d.workflow_definition_id, v.workflow_version
+                """
+            ).fetchall()
+        return [
+            {
+                "workflow_definition_id": row["workflow_definition_id"],
+                "domain": row["domain"],
+                "display_name": row["display_name"],
+                "description": row["description"],
+                "workflow_version": row["workflow_version"],
+                "definition_json": _dict(row["definition_json"]),
+                "status": row["status"],
+                "published_at": None
+                if row["published_at"] is None
+                else row["published_at"].isoformat(),
+            }
+            for row in rows
+        ]
+
     def create_workflow_run(self, run: WorkflowRun) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -226,6 +300,32 @@ class PostgresOrchestrationRepository:
             updated_at=row["updated_at"],
         )
 
+    def list_step_runs(self, workflow_run_id: str) -> list[StepRun]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM step_runs
+                WHERE workflow_run_id = %s
+                ORDER BY created_at, step_run_id
+                """,
+                (workflow_run_id,),
+            ).fetchall()
+        return [
+            StepRun(
+                step_run_id=row["step_run_id"],
+                workflow_run_id=row["workflow_run_id"],
+                step_key=row["step_key"],
+                owner_role=row["owner_role"],
+                status=StepStatus(row["status"]),
+                metadata=_dict(row["metadata"]),
+                started_at=row["started_at"],
+                completed_at=row["completed_at"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
     def update_step_run(self, step: StepRun) -> None:
         with self._connect() as conn:
             cur = conn.execute(
@@ -298,6 +398,63 @@ class PostgresOrchestrationRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    def list_work_orders(self, workflow_run_id: str) -> list[WorkOrder]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM work_orders
+                WHERE workflow_run_id = %s
+                ORDER BY created_at, work_order_id
+                """,
+                (workflow_run_id,),
+            ).fetchall()
+        return [
+            WorkOrder(
+                work_order_id=row["work_order_id"],
+                workflow_run_id=row["workflow_run_id"],
+                step_run_id=row["step_run_id"],
+                owner_role=row["owner_role"],
+                task=row["task"],
+                status=WorkOrderStatus(row["status"]),
+                required_outputs=_list(row["required_outputs"]),
+                inputs=_dict(row["inputs"]),
+                timeout_seconds=row["timeout_seconds"],
+                metadata=_dict(row["metadata"]),
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
+    def list_stale_work_orders(self, now: datetime) -> list[WorkOrder]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM work_orders
+                WHERE status IN ('pending', 'dispatched', 'running')
+                  AND updated_at + (timeout_seconds * interval '1 second') <= %s
+                ORDER BY updated_at, work_order_id
+                """,
+                (now,),
+            ).fetchall()
+        return [
+            WorkOrder(
+                work_order_id=row["work_order_id"],
+                workflow_run_id=row["workflow_run_id"],
+                step_run_id=row["step_run_id"],
+                owner_role=row["owner_role"],
+                task=row["task"],
+                status=WorkOrderStatus(row["status"]),
+                required_outputs=_list(row["required_outputs"]),
+                inputs=_dict(row["inputs"]),
+                timeout_seconds=row["timeout_seconds"],
+                metadata=_dict(row["metadata"]),
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
 
     def update_work_order(self, work_order: WorkOrder) -> None:
         with self._connect() as conn:
@@ -515,6 +672,56 @@ class PostgresOrchestrationRepository:
             )
             conn.commit()
         return cur.rowcount == 1
+
+    def upsert_kanban_projection(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        board_name: str,
+        projection_json: dict,
+        source_event_id: str | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO kanban_projections (
+                    scope_type, scope_id, board_name, projection_json,
+                    source_event_id, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, now())
+                ON CONFLICT (scope_type, scope_id, board_name) DO UPDATE SET
+                    projection_json = excluded.projection_json,
+                    source_event_id = excluded.source_event_id,
+                    updated_at = now()
+                """,
+                (
+                    scope_type,
+                    scope_id,
+                    board_name,
+                    _json(projection_json),
+                    source_event_id,
+                ),
+            )
+            conn.commit()
+
+    def get_kanban_projection(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        board_name: str,
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT projection_json FROM kanban_projections
+                WHERE scope_type = %s AND scope_id = %s AND board_name = %s
+                """,
+                (scope_type, scope_id, board_name),
+            ).fetchone()
+        if not row:
+            return None
+        return _dict(row["projection_json"])
 
 
 def dumps_safe(value: Any) -> str:

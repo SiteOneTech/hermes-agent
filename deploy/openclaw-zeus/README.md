@@ -65,14 +65,15 @@ HERMES_ORCHESTRATION_NODE_ID=zeus
 
 Keep this file mode `0600`.
 
-Zeus should use `openclaw_branch_report(<office_id>)` to read each branch
-`GET /v1/delegate` report. The report's `kanban` block feeds Zeus' Hermes
-Kanban for strategic oversight while the branch keeps its own local operational
-board.
+Zeus should use `openclaw_orchestration_status(<workflow_run_id>)`,
+`openclaw_orchestration_kanban(<workflow_run_id>)`, and
+`openclaw_orchestration_watchdog()` for active workflow supervision. Branch
+reports remain useful for local office health and evidence, but Kanban is a
+projection and not the execution state machine.
 
 For development work, Zeus should use `openclaw_factory_project_request` instead
-of raw `openclaw_delegate_task`. The Factory project tool writes the Sicilia
-Kanban project and canonical stage cards before it delegates async to Leo, so
+of raw `openclaw_delegate_task`. The Factory project tool creates the canonical
+Hermes Orchestration Core workflow before it delegates async to Leo, so
 web/app/repo/preview work cannot disappear into an untracked agent turn.
 
 Then reload user systemd:
