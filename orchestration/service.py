@@ -513,6 +513,44 @@ class OrchestrationService:
         self.refresh_kanban_projection(work_order.workflow_run_id)
         return work_order
 
+    def cancel_work_order(
+        self,
+        work_order_id: str,
+        *,
+        actor: str,
+        reason: str,
+        notes: str = "",
+    ) -> WorkOrder:
+        work_order = self._repo.get_work_order(work_order_id)
+        if work_order.status == WorkOrderStatus.COMPLETED:
+            raise OrchestrationError("Completed work orders cannot be cancelled")
+        previous_status = work_order.status.value
+        work_order.status = WorkOrderStatus.CANCELLED
+        work_order.metadata = {
+            **work_order.metadata,
+            "previous_status": previous_status,
+            "cancelled_by": actor,
+            "cancelled_reason": reason,
+            "cancelled_notes": notes,
+            "cancelled_at": utc_now().isoformat(),
+        }
+        work_order.updated_at = utc_now()
+        self._repo.update_work_order(work_order)
+        self._append_event(
+            work_order.workflow_run_id,
+            "work_order.cancelled",
+            actor,
+            {
+                "reason": reason,
+                "notes": notes,
+                "previous_status": previous_status,
+            },
+            step_run_id=work_order.step_run_id,
+            work_order_id=work_order.work_order_id,
+        )
+        self.refresh_kanban_projection(work_order.workflow_run_id)
+        return work_order
+
     def request_gate_review(
         self,
         *,
@@ -864,6 +902,64 @@ class OrchestrationService:
         )
         self.refresh_kanban_projection(workflow_run_id)
         return event
+
+    def complete_workflow_run(
+        self,
+        workflow_run_id: str,
+        *,
+        actor: str,
+        summary: str,
+        notes: str = "",
+        force: bool = False,
+    ) -> WorkflowRun:
+        run = self._repo.get_workflow_run(workflow_run_id)
+        unfinished = [
+            item.work_order_id
+            for item in self._repo.list_work_orders(workflow_run_id)
+            if item.status
+            not in {
+                WorkOrderStatus.COMPLETED,
+                WorkOrderStatus.CANCELLED,
+            }
+        ]
+        if unfinished and not force:
+            raise OrchestrationError(
+                "Workflow still has unfinished work orders: " + ", ".join(unfinished)
+            )
+
+        now = utc_now()
+        for step in self._repo.list_step_runs(workflow_run_id):
+            if step.status not in {StepStatus.COMPLETED, StepStatus.CANCELLED}:
+                step.status = StepStatus.COMPLETED
+                step.completed_at = now
+                step.updated_at = now
+                self._repo.update_step_run(step)
+
+        run.status = WorkflowRunStatus.COMPLETED
+        run.metadata = {
+            **run.metadata,
+            "completed_by": actor,
+            "completed_at": now.isoformat(),
+            "completion_summary": summary,
+            "completion_notes": notes,
+            "completion_forced": force,
+            "unfinished_at_completion": unfinished,
+        }
+        run.updated_at = now
+        self._repo.update_workflow_run(run)
+        self._append_event(
+            workflow_run_id,
+            "workflow.run.completed",
+            actor,
+            {
+                "summary": summary,
+                "notes": notes,
+                "force": force,
+                "unfinished_work_orders": unfinished,
+            },
+        )
+        self.refresh_kanban_projection(workflow_run_id)
+        return run
 
     def run_watchdog(self, *, actor: str = "zeus-watchdog") -> dict[str, Any]:
         now = utc_now()

@@ -2365,6 +2365,58 @@ def openclaw_orchestration_resolve_intervention(
 
 
 @mcp.tool()
+def openclaw_orchestration_cancel_work_order(
+    work_order_id: str,
+    reason: str,
+    notes: str = "",
+) -> dict[str, Any]:
+    """Cancel an obsolete or superseded work order through the orchestration API."""
+    work_order_id = str(work_order_id or "").strip()
+    if not work_order_id:
+        return {"ok": False, "error": "work_order_id is required"}
+    reason = str(reason or "").strip()
+    if not reason:
+        return {"ok": False, "error": "reason is required"}
+    return _orchestration_api_request(
+        "POST",
+        f"/v1/work-orders/{quote(work_order_id)}/cancel",
+        payload={
+            "actor": "zeus",
+            "reason": reason,
+            "notes": str(notes or "").strip(),
+        },
+        timeout_s=20.0,
+    )
+
+
+@mcp.tool()
+def openclaw_orchestration_complete_workflow(
+    workflow_run_id: str,
+    summary: str,
+    notes: str = "",
+    force: bool = False,
+) -> dict[str, Any]:
+    """Mark a workflow run completed after all work orders are completed or cancelled."""
+    workflow_run_id = str(workflow_run_id or "").strip()
+    if not workflow_run_id:
+        return {"ok": False, "error": "workflow_run_id is required"}
+    summary = str(summary or "").strip()
+    if not summary:
+        return {"ok": False, "error": "summary is required"}
+    return _orchestration_api_request(
+        "POST",
+        f"/v1/workflow-runs/{quote(workflow_run_id)}/complete",
+        payload={
+            "actor": "zeus",
+            "summary": summary,
+            "notes": str(notes or "").strip(),
+            "force": bool(force),
+        },
+        timeout_s=20.0,
+    )
+
+
+@mcp.tool()
 def openclaw_factory_project_request(
     title: str,
     request: str,

@@ -86,6 +86,12 @@ class WorkOrderCallbackRequest(BaseModel):
     notes: str = ""
 
 
+class CancelWorkOrderRequest(BaseModel):
+    actor: str = "zeus"
+    reason: str
+    notes: str = ""
+
+
 class GateDecisionRequest(BaseModel):
     decision: GateDecision
     reviewer_role: str
@@ -137,6 +143,13 @@ class CloseSprintRequest(BaseModel):
     actor: str = "ana-pmo"
     review_notes: str
     retrospective_notes: str
+    force: bool = False
+
+
+class CompleteWorkflowRunRequest(BaseModel):
+    actor: str = "zeus"
+    summary: str
+    notes: str = ""
     force: bool = False
 
 
@@ -605,6 +618,29 @@ def work_order_callback(
     }
 
 
+@router.post("/work-orders/{work_order_id}/cancel")  # type: ignore[union-attr]
+def cancel_work_order(
+    work_order_id: str,
+    body: CancelWorkOrderRequest,
+    service: OrchestrationService = Depends(_get_service),
+) -> dict[str, Any]:
+    try:
+        work_order = service.cancel_work_order(
+            work_order_id,
+            actor=body.actor,
+            reason=body.reason,
+            notes=body.notes,
+        )
+    except OrchestrationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "work_order_id": work_order.work_order_id,
+        "status": work_order.status.value,
+        "work_order": _work_order_payload(work_order),
+        "kanban": service.get_kanban_projection(work_order.workflow_run_id),
+    }
+
+
 @router.post("/workflow-runs/{workflow_run_id}/gates")  # type: ignore[union-attr]
 def request_gate_review(
     workflow_run_id: str,
@@ -705,6 +741,28 @@ def run_watchdog(
     service: OrchestrationService = Depends(_get_service),
 ) -> dict[str, Any]:
     return service.run_watchdog(actor=body.actor)
+
+
+@router.post("/workflow-runs/{workflow_run_id}/complete")  # type: ignore[union-attr]
+def complete_workflow_run(
+    workflow_run_id: str,
+    body: CompleteWorkflowRunRequest,
+    service: OrchestrationService = Depends(_get_service),
+) -> dict[str, Any]:
+    try:
+        run = service.complete_workflow_run(
+            workflow_run_id,
+            actor=body.actor,
+            summary=body.summary,
+            notes=body.notes,
+            force=body.force,
+        )
+    except OrchestrationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "workflow_run": _workflow_run_payload(run),
+        "kanban": service.get_kanban_projection(workflow_run_id),
+    }
 
 
 @router.post("/webhooks/factory-event")  # type: ignore[union-attr]

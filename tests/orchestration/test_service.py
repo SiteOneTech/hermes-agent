@@ -347,3 +347,52 @@ def test_resolve_zeus_intervention_unblocks_run_and_preserves_history():
         == "Repository was missing."
     )
     assert "zeus.intervention_resolved" in [event.event_type for event in timeline]
+
+
+def test_cancel_work_order_and_complete_workflow():
+    service = make_service()
+    run = service.create_workflow_run(
+        workflow_definition_id="software.simple_website.fast_lane",
+        workflow_version="1.0.0",
+        title="Closeout run",
+        created_by="zeus",
+    )
+    completed_work = service.create_work_order(
+        workflow_run_id=run.workflow_run_id,
+        step_run_id=run.current_step_id or "",
+        owner_role="ciro-codex",
+        task="Ship the page.",
+    )
+    obsolete_work = service.create_work_order(
+        workflow_run_id=run.workflow_run_id,
+        step_run_id=run.current_step_id or "",
+        owner_role="olga-openhands",
+        task="Superseded retry.",
+    )
+    service.record_worker_callback(
+        WorkOrderCallback(
+            work_order_id=completed_work.work_order_id,
+            attempt_id="attempt-1",
+            status=WorkOrderStatus.COMPLETED,
+            actor="ciro-codex",
+        ),
+        idempotency_key="closeout:attempt-1",
+    )
+    service.cancel_work_order(
+        obsolete_work.work_order_id,
+        actor="zeus",
+        reason="Superseded by a successful retry.",
+    )
+
+    completed = service.complete_workflow_run(
+        run.workflow_run_id,
+        actor="zeus",
+        summary="All required evidence accepted.",
+    )
+    cancelled = service._repo.get_work_order(obsolete_work.work_order_id)
+    timeline = service.get_timeline(run.workflow_run_id)
+
+    assert cancelled.status == WorkOrderStatus.CANCELLED
+    assert completed.status.value == "completed"
+    assert "work_order.cancelled" in [event.event_type for event in timeline]
+    assert "workflow.run.completed" in [event.event_type for event in timeline]
