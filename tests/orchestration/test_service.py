@@ -29,8 +29,30 @@ def test_create_run_records_initial_step_and_event():
     assert run.workflow_run_id.startswith("wf_run_")
     assert run.current_step_id is not None
     assert run.metadata["methodology"] == "fast_lane"
+    assert run.description
+    assert "Compact workflow" in run.description
+    assert run.metadata["functional_description"] == run.description
     timeline = service.get_timeline(run.workflow_run_id)
     assert [event.event_type for event in timeline] == ["workflow.run.created"]
+    assert timeline[0].payload["description"] == run.description
+
+
+def test_create_run_honors_explicit_functional_description():
+    service = make_service()
+
+    run = service.create_workflow_run(
+        workflow_definition_id="content.social_campaign",
+        workflow_version="1.0.0",
+        title="May launch content",
+        created_by="zeus",
+        description=(
+            "Coordinates the May product launch campaign from brief to reviewed "
+            "content calendar and scheduled posts."
+        ),
+    )
+
+    assert run.description.startswith("Coordinates the May product launch")
+    assert run.metadata["functional_description"] == run.description
 
 
 def test_list_workflow_runs_returns_recent_runs_first():
@@ -207,6 +229,8 @@ def test_factory_scrum_project_opens_sprint_and_projects_kanban():
     run = result["workflow_run"]
     sprint = result["sprint"]
     assert run.workflow_definition_id == "factory.scrum_project"
+    assert "Validate Scrum orchestration cycle" in run.description
+    assert "QA gates" in run.description
     assert run.metadata["current_sprint_id"] == "sprint-001"
     assert sprint is not None
     assert len(sprint["work_orders"]) == 2

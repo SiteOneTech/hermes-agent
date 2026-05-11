@@ -52,6 +52,44 @@ class OrchestrationService:
     def list_workflow_definitions(self) -> list[dict]:
         return self._repo.list_workflow_definitions()
 
+    def _build_workflow_run_description(
+        self,
+        *,
+        title: str,
+        workflow_definition_id: str,
+        pack: Any,
+        metadata: dict[str, Any],
+        description: str | None,
+    ) -> str:
+        explicit = (description or "").strip()
+        if not explicit:
+            for key in ("functional_description", "description"):
+                value = metadata.get(key)
+                if isinstance(value, str) and value.strip():
+                    explicit = value.strip()
+                    break
+        if explicit:
+            return explicit
+
+        objective = metadata.get("objective")
+        objective_text = objective.strip() if isinstance(objective, str) else ""
+        branch = metadata.get("branch_id")
+        branch_text = f" for branch {branch}" if isinstance(branch, str) and branch else ""
+        if pack is not None:
+            base = f"{pack.display_name}: {pack.description}"
+            if objective_text:
+                return f"{base} Objective: {objective_text}{branch_text}."
+            return f"{base} Run scope: {title}."
+        if objective_text:
+            return (
+                f"Workflow for {objective_text}{branch_text}. It coordinates durable "
+                "steps, work orders, gates, evidence, and status tracking."
+            )
+        return (
+            f"Workflow run for {title} using {workflow_definition_id}. It coordinates "
+            "durable steps, work orders, gates, evidence, and status tracking."
+        )
+
     def create_workflow_run(
         self,
         *,
@@ -61,9 +99,11 @@ class OrchestrationService:
         created_by: str,
         initial_step_key: str = "INTAKE",
         initial_owner_role: str = "zeus",
+        description: str | None = None,
         metadata: dict | None = None,
     ) -> WorkflowRun:
         pack = get_workflow_pack(workflow_definition_id, workflow_version)
+        metadata = dict(metadata or {})
         if pack is not None:
             if initial_step_key == "INTAKE":
                 initial_step_key = pack.initial_step_key
@@ -73,17 +113,29 @@ class OrchestrationService:
                 "methodology": pack.methodology,
                 "workflow_domain": pack.domain,
                 "workflow_display_name": pack.display_name,
-                **(metadata or {}),
+                **metadata,
             }
+        functional_description = self._build_workflow_run_description(
+            title=title,
+            workflow_definition_id=workflow_definition_id,
+            pack=pack,
+            metadata=metadata,
+            description=description,
+        )
+        metadata = {
+            **metadata,
+            "functional_description": functional_description,
+        }
         run = WorkflowRun(
             workflow_run_id=new_id("wf_run"),
             workflow_definition_id=workflow_definition_id,
             workflow_version=workflow_version,
             title=title,
+            description=functional_description,
             status=WorkflowRunStatus.ACTIVE,
             current_step_id=None,
             created_by=created_by,
-            metadata=metadata or {},
+            metadata=metadata,
         )
         step = StepRun(
             step_run_id=new_id("step"),
@@ -106,6 +158,7 @@ class OrchestrationService:
                 "workflow_definition_id": workflow_definition_id,
                 "workflow_version": workflow_version,
                 "title": title,
+                "description": functional_description,
                 "initial_step_key": initial_step_key,
                 "methodology": None if pack is None else pack.methodology,
             },
@@ -152,6 +205,12 @@ class OrchestrationService:
             workflow_version="1.0.0",
             title=title,
             created_by=created_by,
+            description=(
+                "Factory Scrum Project: coordinates the project objective through "
+                "planning, sprint backlog, micro-sprint execution, QA gates, Zeus "
+                f"acceptance, retrospective, and release/memory updates for branch {branch_id}. "
+                f"Objective: {objective}."
+            ),
             metadata={
                 "project_id": project_id,
                 "branch_id": branch_id,

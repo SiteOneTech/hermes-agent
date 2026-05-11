@@ -75,6 +75,7 @@ class WorkflowRun:
     workflow_definition_id: str
     workflow_version: str
     title: str
+    description: str
     status: WorkflowRunStatus
     current_step_id: str | None
     created_by: str

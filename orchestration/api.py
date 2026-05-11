@@ -34,6 +34,7 @@ class CreateWorkflowRunRequest(BaseModel):
     workflow_definition_id: str
     workflow_version: str = "1.0.0"
     title: str
+    description: str = ""
     created_by: str
     initial_step_key: str = "INTAKE"
     initial_owner_role: str = "zeus"
@@ -201,6 +202,7 @@ def _workflow_run_payload(run: Any) -> dict[str, Any]:
         "workflow_definition_id": run.workflow_definition_id,
         "workflow_version": run.workflow_version,
         "title": run.title,
+        "description": run.description,
         "status": run.status.value,
         "current_step_id": run.current_step_id,
         "created_by": run.created_by,
@@ -317,6 +319,7 @@ def create_workflow_run(
         created_by=body.created_by,
         initial_step_key=body.initial_step_key,
         initial_owner_role=body.initial_owner_role,
+        description=body.description,
         metadata=body.metadata,
     )
     return {

@@ -72,6 +72,7 @@ def _workflow_run_from_row(row: dict[str, Any]) -> WorkflowRun:
         workflow_definition_id=row["workflow_definition_id"],
         workflow_version=row["workflow_version"],
         title=row["title"],
+        description=row.get("description") or "",
         status=WorkflowRunStatus(row["status"]),
         current_step_id=row["current_step_id"],
         created_by=row["created_by"],
@@ -208,15 +209,16 @@ class PostgresOrchestrationRepository:
                 """
                 INSERT INTO workflow_runs (
                     workflow_run_id, workflow_definition_id, workflow_version,
-                    title, status, current_step_id, created_by, metadata,
-                    created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    title, description, status, current_step_id, created_by,
+                    metadata, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     run.workflow_run_id,
                     run.workflow_definition_id,
                     run.workflow_version,
                     run.title,
+                    run.description,
                     run.status.value,
                     run.current_step_id,
                     run.created_by,
@@ -268,12 +270,13 @@ class PostgresOrchestrationRepository:
             cur = conn.execute(
                 """
                 UPDATE workflow_runs
-                SET title = %s, status = %s, current_step_id = %s,
-                    metadata = %s, updated_at = %s
+                SET title = %s, description = %s, status = %s,
+                    current_step_id = %s, metadata = %s, updated_at = %s
                 WHERE workflow_run_id = %s
                 """,
                 (
                     run.title,
+                    run.description,
                     run.status.value,
                     run.current_step_id,
                     _json(run.metadata),

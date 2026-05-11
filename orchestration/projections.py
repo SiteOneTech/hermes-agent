@@ -122,6 +122,7 @@ def build_kanban_projection(
             metadata={
                 "workflow_definition_id": run.workflow_definition_id,
                 "workflow_version": run.workflow_version,
+                "description": run.description,
                 **run.metadata,
             },
         )
@@ -199,4 +200,3 @@ def build_kanban_projection(
         "cards": cards,
         "source_of_truth": "Hermes Orchestration Core",
     }
-
