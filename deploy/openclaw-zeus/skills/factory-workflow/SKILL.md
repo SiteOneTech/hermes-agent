@@ -44,6 +44,19 @@ Delegated agents must use the node's configured GitHub credential (`GH_TOKEN`, `
 
 Every code-producing callback must include repo URL, branch, commit SHA, changed files, artifact refs, and agent observability log refs.
 
+## Engine Routing Contract
+
+Code-producing work must name its engine explicitly:
+
+- `codex`: focused repo edits, tests, docs, fast implementation.
+- `claude_code`: reasoning-heavy implementation, broad refactors, architecture-sensitive work.
+- `openhands_vm`: approved OpenHands runner VM/service for autonomous implementation.
+- `openhands_cli`: explicit fallback or benchmark path only; never an implicit replacement for `openhands_vm`.
+
+For OpenHands production work, prefer `openhands_vm` through the `openhands_runner` connector. The VM uses its own UI-configured GitHub integration for private repositories. Do not pass GitHub tokens in prompts, TaskSpecs, Markdown, Notion, logs, or chat.
+
+Every engine attempt must record `engine_id`, `execution_surface`, runner task ID or branch task ID, duration, error taxonomy, re-gate count, repo URL, branch, commit SHA, changed files, and accepted/rejected gate result. Use those metrics to learn which engine performs best per task type.
+
 ## Timeout Pattern
 
 If a delegation or worker stalls:

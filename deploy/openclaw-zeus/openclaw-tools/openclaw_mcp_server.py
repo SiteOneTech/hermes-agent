@@ -851,6 +851,8 @@ def _sync_orchestration_delegation_acceptance(
     branch_task_id: str,
     async_mode: bool,
     response: Any,
+    transport: str = "branch-delegation-v1",
+    heartbeat_notes: str = "Branch receiver accepted delegated work.",
 ) -> dict[str, Any]:
     workflow_run_id, work_order_id = _orchestration_refs_from_task(
         task_text,
@@ -874,7 +876,7 @@ def _sync_orchestration_delegation_acceptance(
         "agent_id": agent_id,
         "branch_task_id": branch_task_id,
         "async_mode": async_mode,
-        "transport": "branch-delegation-v1",
+        "transport": transport,
     }
 
     if work_order_id:
@@ -890,7 +892,7 @@ def _sync_orchestration_delegation_acceptance(
             payload={
                 "actor": agent_id,
                 "metrics": metrics,
-                "notes": "Branch receiver accepted delegated work.",
+                "notes": heartbeat_notes,
             },
             timeout_s=10.0,
         )
@@ -913,6 +915,7 @@ def _sync_orchestration_delegation_acceptance(
                     "agent_id": agent_id,
                     "branch_task_id": branch_task_id,
                     "async_mode": async_mode,
+                    "transport": transport,
                     "response": response if isinstance(response, dict) else {},
                 },
             },
@@ -1232,6 +1235,32 @@ def _openhands_connector_url(office: dict[str, Any]) -> str:
 def _openhands_connector_token(office: dict[str, Any]) -> tuple[str, str]:
     token_env = str(office.get("connector_token_env") or "OPENHANDS_CONNECTOR_TOKEN")
     return token_env, _env(token_env)
+
+
+def _openhands_runner_task_id(result: dict[str, Any]) -> str:
+    body = result.get("body_json") if isinstance(result.get("body_json"), dict) else {}
+    candidates: list[Any] = [
+        body.get("task_id"),
+        body.get("start_task_id"),
+        body.get("id"),
+    ]
+    nested = body.get("result") if isinstance(body.get("result"), dict) else {}
+    nested_body = nested.get("body") if isinstance(nested.get("body"), dict) else {}
+    candidates.extend(
+        [
+            nested.get("task_id"),
+            nested.get("start_task_id"),
+            nested.get("id"),
+            nested_body.get("id"),
+            nested_body.get("start_task_id"),
+            nested_body.get("task_id"),
+        ]
+    )
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _endpoint_host_port(endpoint: str) -> tuple[str, int] | None:
@@ -1561,12 +1590,67 @@ def openclaw_openhands_status() -> dict[str, Any]:
         "routing_policy": {
             "default_route": "factory",
             "factory_path": "Zeus -> Sicilia -> olga-openhands -> OpenHands runner",
-            "direct_connector": "available for status and approved direct task envelopes only",
+            "vm_route": "approved execution surface for OpenHands work: route='vm' or route='runner'",
+            "cli_fallback": (
+                "openhands_cli is a separate fallback/benchmark engine and must be "
+                "explicitly recorded; it must not silently replace openhands_vm."
+            ),
+            "direct_connector": "break-glass only; disabled for execute=true unless explicitly enabled",
+            "engine_portfolio": {
+                "codex": "fast repo edits, tests, docs, focused implementation",
+                "claude_code": "reasoning-heavy implementation and refactors",
+                "openhands_vm": "dedicated OpenHands runner VM/service for autonomous implementation",
+                "openhands_cli": "explicit fallback or benchmark path, never implicit VM substitute",
+            },
+            "metrics_required": [
+                "engine_id",
+                "execution_surface",
+                "duration_s",
+                "runner_task_id_or_branch_task_id",
+                "commit_sha",
+                "changed_files",
+                "error_type",
+                "regate_count",
+                "accepted_by_gate",
+            ],
             "non_overlap_rule": (
                 "Zeus should keep product intent, supervision, and escalation. "
                 "Factory/olga-openhands owns development execution."
             ),
         },
+    }
+
+
+@mcp.tool()
+def openclaw_openhands_task_status(task_id: str) -> dict[str, Any]:
+    """Inspect one OpenHands runner VM task created through the connector."""
+    task_id = str(task_id or "").strip()
+    if not task_id:
+        return {"ok": False, "error": "task_id is required"}
+    office, err = _openhands_runner()
+    if err:
+        return err
+    assert office is not None
+    connector_url = _openhands_connector_url(office)
+    token_env, token = _openhands_connector_token(office)
+    if not connector_url:
+        return {"ok": False, "error": "OpenHands connector URL is not configured"}
+    if not token:
+        return {"ok": False, "error": f"missing OpenHands connector token env {token_env}", "token_env": token_env}
+    result = _http_json_request(
+        "GET",
+        urljoin(f"{connector_url}/", f"v1/openhands/tasks/{quote(task_id)}"),
+        bearer_token=token,
+        timeout_s=12.0,
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "task_id": task_id,
+        "runner": "openhands_runner",
+        "connector_url": connector_url,
+        "token_env": token_env,
+        "token_configured": bool(token),
+        "result": result,
     }
 
 
@@ -2387,6 +2471,10 @@ def openclaw_factory_project_request(
             "18. Leo must not write or close specialist deliverables for Vera, Mia, Nico, Iris, Bruno, Tina, Belen, Sofia, Rene, or Dario.",
             "19. Every successful stage must include the responsible owner, matching work_order_id, artifact paths, and gate result in FactoryRun.",
             "20. Exit code 0 or a good narrative is not completion; success without owner evidence must be marked partial/blocked.",
+            "21. Execution engines must be explicit in every code-bearing work order: codex, claude_code, openhands_vm, or openhands_cli.",
+            "22. For OpenHands production execution use engine_id=openhands_vm through the openhands_runner VM connector. openhands_cli is only an explicitly selected fallback/benchmark path and must never silently replace the VM.",
+            "23. OpenHands VM uses its UI-configured GitHub integration for private repos; never pass GitHub tokens in prompts, artifacts, logs, Markdown, Notion, or chat.",
+            "24. Every execution callback must include engine_id, execution_surface, runner_task_id or branch_task_id, attempt number, duration, error taxonomy, re-gate count, repo_url, branch, commit_sha and changed_files.",
         ]
         if work_order_lines:
             lines.extend(["", "Canonical work orders:", *work_order_lines])
@@ -2602,8 +2690,9 @@ def openclaw_openhands_delegate_task(
     """Route a development task to OpenHands without bypassing Factory governance.
 
     Default route is `factory`: Zeus delegates to Sicilia's `olga-openhands`
-    agent, which owns OpenHands execution. Set execute=false to validate the
-    route without starting work. Direct connector execution is disabled by
+    agent, which owns engine routing. Use `route="vm"` or `route="runner"` for
+    an approved OpenHands runner VM task envelope. Set execute=false to validate
+    the route without starting work. Direct connector execution is disabled by
     default and must not be used for normal Factory work.
     """
     task = str(task or "").strip()
@@ -2623,6 +2712,9 @@ def openclaw_openhands_delegate_task(
             f"Branch: {branch}" if branch else "",
             "",
             "Use OpenHands only if it is the right execution path for this development task.",
+            "If OpenHands execution is required, use engine_id=openhands_vm through the openhands_runner VM connector.",
+            "Use engine_id=openhands_cli only as an explicitly selected fallback/benchmark and record it separately.",
+            "Never print, request, or store GitHub tokens; the VM uses its UI-configured GitHub integration.",
             "Keep Zeus as strategic supervisor; do not assign Zeus implementation tickets.",
             "",
             task,
@@ -2649,8 +2741,93 @@ def openclaw_openhands_delegate_task(
             async_mode=async_mode,
         )
 
+    if route in {"vm", "runner", "openhands_vm"}:
+        office, err = _openhands_runner()
+        if err:
+            return err
+        assert office is not None
+        connector_url = _openhands_connector_url(office)
+        token_env, token = _openhands_connector_token(office)
+        if not connector_url:
+            return {"ok": False, "error": "OpenHands connector URL is not configured"}
+        if not token:
+            return {
+                "ok": False,
+                "error": f"missing OpenHands connector token env {token_env}",
+                "token_env": token_env,
+            }
+
+        payload = {
+            "title": title,
+            "task": governed_task,
+            "repository": repository,
+            "branch": branch,
+            "dry_run": not execute,
+            "git_provider": "github" if repository else "",
+            "system_message_suffix": (
+                "Factory execution surface: openhands_vm. Use the OpenHands "
+                "runner VM and its configured GitHub integration. Do not ask "
+                "for, print, or persist GitHub tokens. Return repo_url, branch, "
+                "commit_sha, changed_files, verification, duration, error "
+                "taxonomy, and runner log reference."
+            ),
+        }
+        result = _http_json_request(
+            "POST",
+            urljoin(f"{connector_url}/", "v1/openhands/tasks"),
+            payload=payload,
+            bearer_token=token,
+            timeout_s=deadline,
+        )
+        runner_task_id = _openhands_runner_task_id(result)
+        response_body = result.get("body_json") if isinstance(result.get("body_json"), dict) else {}
+        result_payload: dict[str, Any] = {
+            "ok": bool(result.get("ok")),
+            "route": "vm",
+            "engine_id": "openhands_vm",
+            "execution_surface": "openhands_runner_vm",
+            "runner": "openhands_runner",
+            "connector_url": connector_url,
+            "dry_run": not execute,
+            "token_env": token_env,
+            "token_configured": bool(token),
+            "runner_task_id": runner_task_id or None,
+            "result": result,
+        }
+        if runner_task_id:
+            result_payload["task_status"] = {
+                "tool": "openclaw_openhands_task_status",
+                "task_id": runner_task_id,
+            }
+        if result.get("ok"):
+            result_payload["orchestration_sync"] = _sync_orchestration_delegation_acceptance(
+                task_text=governed_task,
+                request_payload=payload,
+                office_id="openhands_runner",
+                agent_id="openhands_vm",
+                branch_task_id=runner_task_id or "unknown",
+                async_mode=True,
+                response=response_body,
+                transport="openhands-runner-v1",
+                heartbeat_notes="OpenHands runner VM accepted delegated work.",
+            )
+        else:
+            result_payload["orchestration_sync"] = _sync_orchestration_delegation_failure(
+                task_text=governed_task,
+                request_payload=payload,
+                office_id="openhands_runner",
+                agent_id="openhands_vm",
+                branch_task_id=runner_task_id or "unknown",
+                error=str(result.get("error") or response_body)[:1000],
+            )
+        return result_payload
+
     if route != "direct":
-        return {"ok": False, "error": "route must be 'factory' or 'direct'"}
+        return {
+            "ok": False,
+            "error": "route must be 'factory', 'vm', 'runner' or 'direct'",
+            "allowed_routes": ["factory", "vm", "runner", "direct"],
+        }
 
     direct_enabled = _env("OPENCLAW_ALLOW_DIRECT_OPENHANDS_EXECUTION").lower() in {
         "1",
@@ -2665,7 +2842,8 @@ def openclaw_openhands_delegate_task(
             "direct_execution_enabled": False,
             "error": (
                 "Direct OpenHands execution is disabled. Use route='factory' "
-                "with execute=true so Sicilia/olga-openhands owns the work, "
+                "with execute=true so Sicilia/olga-openhands owns routing, "
+                "or route='vm' so the dedicated OpenHands runner VM owns execution, "
                 "or set OPENCLAW_ALLOW_DIRECT_OPENHANDS_EXECUTION=1 only for "
                 "an explicitly approved break-glass task."
             ),
@@ -2927,7 +3105,7 @@ def openclaw_delegation_runbook() -> dict[str, Any]:
             "Expose each office through the branch-delegation-v1 receiver or an approved gateway/queue adapter.",
             "Store each office token only in ~/.hermes/.env as OPENCLAW_<OFFICE>_DELEGATE_TOKEN.",
             "Enable the openclaw-office MCP server in Hermes for CLI and Telegram toolsets.",
-            "For OpenHands work, prefer Zeus -> Sicilia -> olga-openhands -> OpenHands runner; use the direct OpenHands connector only for approved status checks or explicit direct task envelopes.",
+            "For OpenHands work, prefer explicit engine routing: route='factory' for governed Sicilia ownership, route='vm' for approved OpenHands runner VM execution, and route='direct' only for break-glass diagnostics.",
             "Use async delegation for non-trivial work: submit with async_mode=true, then poll openclaw_delegation_status and openclaw_branch_report instead of waiting for a long HTTP response.",
             "Before delegating, call openclaw_office_status to verify tailnet, endpoint, token, and agent registration.",
             "For new offices, add the node to Tailscale, deploy a receiver, add a token, register agents, then test with dry_run before live delegation.",
