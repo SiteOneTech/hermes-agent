@@ -327,6 +327,24 @@ def create_workflow_run(
     }
 
 
+@router.get("/workflow-runs")  # type: ignore[union-attr]
+def list_workflow_runs(
+    limit: int = 50,
+    status: str | None = None,
+    service: OrchestrationService = Depends(_get_service),
+) -> dict[str, Any]:
+    normalized_status = status.strip().lower() if status else None
+    return {
+        "workflow_runs": [
+            _workflow_run_payload(item)
+            for item in service.list_workflow_runs(
+                limit=limit,
+                status=normalized_status or None,
+            )
+        ],
+    }
+
+
 @router.get("/workflow-runs/{workflow_run_id}")  # type: ignore[union-attr]
 def get_workflow_run(
     workflow_run_id: str,

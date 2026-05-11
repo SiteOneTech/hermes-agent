@@ -66,6 +66,21 @@ def _dict(value: Any) -> dict:
     return dict(value)
 
 
+def _workflow_run_from_row(row: dict[str, Any]) -> WorkflowRun:
+    return WorkflowRun(
+        workflow_run_id=row["workflow_run_id"],
+        workflow_definition_id=row["workflow_definition_id"],
+        workflow_version=row["workflow_version"],
+        title=row["title"],
+        status=WorkflowRunStatus(row["status"]),
+        current_step_id=row["current_step_id"],
+        created_by=row["created_by"],
+        metadata=_dict(row["metadata"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
 class PostgresMigrationRunner:
     def __init__(self, database_url: str, migrations_dir: Path = MIGRATIONS_DIR) -> None:
         self._database_url = database_url
@@ -212,6 +227,32 @@ class PostgresOrchestrationRepository:
             )
             conn.commit()
 
+    def list_workflow_runs(
+        self,
+        *,
+        limit: int = 50,
+        status: str | None = None,
+    ) -> list[WorkflowRun]:
+        bounded_limit = max(1, min(int(limit or 50), 200))
+        params: list[Any] = []
+        where = ""
+        if status:
+            where = "WHERE status = %s"
+            params.append(status)
+        params.append(bounded_limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM workflow_runs
+                {where}
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT %s
+                """,
+                params,
+            ).fetchall()
+        return [_workflow_run_from_row(row) for row in rows]
+
     def get_workflow_run(self, workflow_run_id: str) -> WorkflowRun:
         with self._connect() as conn:
             row = conn.execute(
@@ -220,18 +261,7 @@ class PostgresOrchestrationRepository:
             ).fetchone()
         if not row:
             raise EntityNotFound(workflow_run_id)
-        return WorkflowRun(
-            workflow_run_id=row["workflow_run_id"],
-            workflow_definition_id=row["workflow_definition_id"],
-            workflow_version=row["workflow_version"],
-            title=row["title"],
-            status=WorkflowRunStatus(row["status"]),
-            current_step_id=row["current_step_id"],
-            created_by=row["created_by"],
-            metadata=_dict(row["metadata"]),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-        )
+        return _workflow_run_from_row(row)
 
     def update_workflow_run(self, run: WorkflowRun) -> None:
         with self._connect() as conn:

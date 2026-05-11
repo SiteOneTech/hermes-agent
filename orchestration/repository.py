@@ -40,6 +40,12 @@ class OrchestrationRepository(Protocol):
     def list_workflow_definitions(self) -> list[dict]: ...
 
     def create_workflow_run(self, run: WorkflowRun) -> None: ...
+    def list_workflow_runs(
+        self,
+        *,
+        limit: int = 50,
+        status: str | None = None,
+    ) -> list[WorkflowRun]: ...
     def get_workflow_run(self, workflow_run_id: str) -> WorkflowRun: ...
     def update_workflow_run(self, run: WorkflowRun) -> None: ...
 
@@ -124,6 +130,20 @@ class InMemoryOrchestrationRepository:
 
     def create_workflow_run(self, run: WorkflowRun) -> None:
         self.workflow_runs[run.workflow_run_id] = deepcopy(run)
+
+    def list_workflow_runs(
+        self,
+        *,
+        limit: int = 50,
+        status: str | None = None,
+    ) -> list[WorkflowRun]:
+        items = [
+            deepcopy(item)
+            for item in self.workflow_runs.values()
+            if status is None or item.status.value == status
+        ]
+        items.sort(key=lambda item: item.updated_at, reverse=True)
+        return items[: max(1, min(limit, 200))]
 
     def get_workflow_run(self, workflow_run_id: str) -> WorkflowRun:
         try:

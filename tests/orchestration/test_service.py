@@ -33,6 +33,30 @@ def test_create_run_records_initial_step_and_event():
     assert [event.event_type for event in timeline] == ["workflow.run.created"]
 
 
+def test_list_workflow_runs_returns_recent_runs_first():
+    service = make_service()
+
+    first = service.create_workflow_run(
+        workflow_definition_id="software.simple_website.fast_lane",
+        workflow_version="1.0.0",
+        title="First run",
+        created_by="zeus",
+    )
+    second = service.create_workflow_run(
+        workflow_definition_id="content.social_campaign",
+        workflow_version="1.0.0",
+        title="Second run",
+        created_by="zeus",
+    )
+
+    runs = service.list_workflow_runs(limit=10)
+    assert [item.workflow_run_id for item in runs[:2]] == [
+        second.workflow_run_id,
+        first.workflow_run_id,
+    ]
+    assert service.list_workflow_runs(limit=10, status="active")
+
+
 def test_worker_callback_is_idempotent_and_links_observability_log():
     service = make_service()
     run = service.create_workflow_run(

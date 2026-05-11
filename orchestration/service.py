@@ -117,6 +117,14 @@ class OrchestrationService:
     def get_workflow_run(self, workflow_run_id: str) -> WorkflowRun:
         return self._repo.get_workflow_run(workflow_run_id)
 
+    def list_workflow_runs(
+        self,
+        *,
+        limit: int = 50,
+        status: str | None = None,
+    ) -> list[WorkflowRun]:
+        return self._repo.list_workflow_runs(limit=limit, status=status)
+
     def get_timeline(self, workflow_run_id: str) -> list[WorkflowEvent]:
         return self._repo.list_events(workflow_run_id)
 
