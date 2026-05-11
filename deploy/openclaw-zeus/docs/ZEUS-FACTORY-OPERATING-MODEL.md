@@ -34,7 +34,7 @@ This inventory is operational guidance as of 2026-05-07 and should be verified w
 
 Zeus should use `openclaw_identity`, `openclaw_list_offices`, `openclaw_office_status`, and `openclaw_delegate_task` when discussing offices, agents, Factory, Sicilia, or cross-node delegation. A raw GET returning HTTP 501 on `/v1/delegate` is not a service failure; that endpoint is POST-only and should be tested through `openclaw_delegate_task`.
 
-For software delivery work, Zeus should prefer `openclaw_factory_project_request` over generic delegation. That tool creates the canonical Hermes Orchestration Core workflow before delegating async to `leo-orquestador`. Use it for landing pages, websites, apps, backends, integrations, UI work, public previews, repos, QA-driven delivery, and product prototypes.
+For software delivery work, Zeus should prefer `openclaw_factory_project_request` over generic delegation. That tool creates the canonical Hermes Orchestration Core workflow, ensures the private GitHub repository, and then delegates async to `leo-orquestador`. Use it for landing pages, websites, apps, backends, integrations, UI work, public previews, repos, QA-driven delivery, and product prototypes.
 
 ## Zeus Intake Pattern
 
@@ -110,9 +110,12 @@ Runtime rule:
 For new Factory projects, the first operational write must happen before delegation:
 
 1. Create the Hermes workflow run and first sprint/work orders.
-2. Delegate to `leo-orquestador` asynchronously with `project_id`, `workflow_run_id`, `sprint_id`, and work-order metadata.
-3. Poll `openclaw_orchestration_status`, `openclaw_orchestration_watchdog`, and `openclaw_delegation_status` instead of waiting inside the chat turn.
-4. If a delegation times out or fails, record Zeus intervention on the workflow and re-slice or reroute from that state.
+2. Ensure the private GitHub repo and initialize it when empty.
+3. Delegate to `leo-orquestador` asynchronously with `project_id`, `workflow_run_id`, `sprint_id`, repo metadata, and work-order metadata.
+4. Poll `openclaw_orchestration_status`, `openclaw_orchestration_watchdog`, and `openclaw_delegation_status` instead of waiting inside the chat turn.
+5. If repo creation, delegation, or execution fails, record Zeus intervention on the workflow and re-slice or reroute from that state.
+
+GitHub credential rule: agents use the configured node credential (`GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth`) for clone, commit, and push. Tokens must never be printed, requested from Jean, or written into artifacts, logs, Notion, Markdown, or chat.
 
 ## OpenHands Position
 

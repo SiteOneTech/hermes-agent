@@ -10,6 +10,7 @@ The server is intentionally small and conservative:
 from __future__ import annotations
 
 import argparse
+import base64
 import smtplib
 import json
 import os
@@ -197,6 +198,169 @@ def _factory_backlog_items(pid: str, title: str, complexity: str) -> list[dict[s
             }
         )
     return items
+
+
+def _github_api_request(
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+    timeout_s: float = 15.0,
+) -> dict[str, Any]:
+    token = _env("GH_TOKEN") or _env("GITHUB_TOKEN")
+    if not token:
+        return {"ok": False, "error": "missing GH_TOKEN or GITHUB_TOKEN"}
+    url = f"https://api.github.com/{path.lstrip('/')}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "hermes-openclaw-factory/1.0",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    started = time.monotonic()
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            text = resp.read(262144).decode("utf-8", errors="replace")
+            try:
+                parsed: Any = json.loads(text) if text else {}
+            except json.JSONDecodeError:
+                parsed = {"raw": text[:1024]}
+            return {
+                "ok": 200 <= resp.status < 300,
+                "status": resp.status,
+                "body_json": parsed,
+                "duration_s": round(time.monotonic() - started, 3),
+            }
+    except urllib.error.HTTPError as exc:
+        text = exc.read(4096).decode("utf-8", errors="replace")
+        return {
+            "ok": False,
+            "status": exc.code,
+            "error": text or str(exc),
+            "duration_s": round(time.monotonic() - started, 3),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "duration_s": round(time.monotonic() - started, 3),
+        }
+
+
+def _ensure_factory_github_repo(repo_name: str, title: str, project_slug: str) -> dict[str, Any]:
+    owner = "SiteOneTech"
+    repo_name = _slugify(repo_name, fallback=f"factory-su-{project_slug}")
+    repo = _github_api_request("GET", f"/repos/{owner}/{quote(repo_name)}")
+    if repo.get("ok"):
+        body = repo.get("body_json") if isinstance(repo.get("body_json"), dict) else {}
+        ensure = _ensure_factory_repo_initialized(
+            owner=owner,
+            repo_name=repo_name,
+            title=title,
+            repo=body,
+        )
+        return {
+            "ok": bool(ensure.get("ok")),
+            "action": "existing",
+            "repo_name": repo_name,
+            "repo_url": body.get("html_url") or f"https://github.com/{owner}/{repo_name}",
+            "clone_url": body.get("clone_url") or f"https://github.com/{owner}/{repo_name}.git",
+            "visibility": body.get("visibility") or ("private" if body.get("private") else "unknown"),
+            "default_branch": ensure.get("default_branch") or body.get("default_branch") or "",
+            "initialized": ensure,
+        }
+    if repo.get("status") not in {403, 404}:
+        return {
+            "ok": False,
+            "action": "lookup_failed",
+            "repo_name": repo_name,
+            "error": repo.get("error") or f"GitHub lookup failed with status {repo.get('status')}",
+            "github": repo,
+        }
+
+    created = _github_api_request(
+        "POST",
+        f"/orgs/{owner}/repos",
+        payload={
+            "name": repo_name,
+            "description": f"{title} managed by SitioUno Factory",
+            "private": True,
+            "has_issues": False,
+            "has_projects": False,
+            "has_wiki": False,
+            "auto_init": True,
+        },
+        timeout_s=20.0,
+    )
+    if not created.get("ok"):
+        return {
+            "ok": False,
+            "action": "create_failed",
+            "repo_name": repo_name,
+            "error": created.get("error") or f"GitHub create failed with status {created.get('status')}",
+            "github": created,
+        }
+    body = created.get("body_json") if isinstance(created.get("body_json"), dict) else {}
+    return {
+        "ok": True,
+        "action": "created",
+        "repo_name": repo_name,
+        "repo_url": body.get("html_url") or f"https://github.com/{owner}/{repo_name}",
+        "clone_url": body.get("clone_url") or f"https://github.com/{owner}/{repo_name}.git",
+        "visibility": body.get("visibility") or "private",
+        "default_branch": body.get("default_branch") or "main",
+        "initialized": {"ok": True, "action": "auto_init"},
+    }
+
+
+def _ensure_factory_repo_initialized(
+    *,
+    owner: str,
+    repo_name: str,
+    title: str,
+    repo: dict[str, Any],
+) -> dict[str, Any]:
+    default_branch = str(repo.get("default_branch") or "main").strip() or "main"
+    branch = _github_api_request(
+        "GET",
+        f"/repos/{owner}/{quote(repo_name)}/branches/{quote(default_branch)}",
+    )
+    if branch.get("ok"):
+        return {"ok": True, "action": "already_initialized", "default_branch": default_branch}
+
+    readme = (
+        f"# {title}\n\n"
+        "Managed by SitioUno Software Factory through Hermes Orchestration Core.\n"
+    )
+    initialized = _github_api_request(
+        "PUT",
+        f"/repos/{owner}/{quote(repo_name)}/contents/README.md",
+        payload={
+            "message": "chore: initialize factory repository",
+            "content": base64.b64encode(readme.encode("utf-8")).decode("ascii"),
+        },
+        timeout_s=20.0,
+    )
+    if not initialized.get("ok"):
+        return {
+            "ok": False,
+            "action": "initialize_failed",
+            "error": initialized.get("error") or f"GitHub initialize failed with status {initialized.get('status')}",
+            "github": initialized,
+        }
+    refreshed = _github_api_request("GET", f"/repos/{owner}/{quote(repo_name)}")
+    refreshed_body = (
+        refreshed.get("body_json")
+        if isinstance(refreshed.get("body_json"), dict)
+        else {}
+    )
+    return {
+        "ok": True,
+        "action": "initialized",
+        "default_branch": refreshed_body.get("default_branch") or "main",
+    }
 
 
 def _zeus_kanban_upsert(
@@ -2117,6 +2281,16 @@ def openclaw_factory_project_request(
         complexity = "standard"
     autonomy_level = str(autonomy_level or "L2").strip().upper()
     preview_url = f"https://kidu.app/p/{slug}/"
+    repo_preflight: dict[str, Any] = {
+        "ok": True,
+        "dry_run": True,
+        "action": "would_ensure_private_repo",
+        "repo_name": repo_name,
+        "repo_url": f"https://github.com/SiteOneTech/{repo_name}",
+        "clone_url": f"https://github.com/SiteOneTech/{repo_name}.git",
+        "visibility": "private",
+        "default_branch": "main",
+    }
     metadata = {
         "canonical_factory_project": True,
         "source": "zeus_factory_project_request",
@@ -2160,6 +2334,10 @@ def openclaw_factory_project_request(
         sprint_id: str = "sprint-001",
         work_orders: list[dict[str, Any]] | None = None,
     ) -> str:
+        repo_url = str(repo_preflight.get("repo_url") or f"https://github.com/SiteOneTech/{repo_name}")
+        clone_url = str(repo_preflight.get("clone_url") or f"{repo_url}.git")
+        default_branch = str(repo_preflight.get("default_branch") or "main")
+        branch_prefix = f"factory/{slug}"
         work_order_lines = []
         for item in work_orders or []:
             work_order_lines.append(
@@ -2178,7 +2356,10 @@ def openclaw_factory_project_request(
             f"Title: {title}",
             f"Complexity: {complexity}",
             f"Autonomy level: {autonomy_level}",
-            f"Required private repo: https://github.com/SiteOneTech/{repo_name}",
+            f"Required private repo: {repo_url}",
+            f"Git clone URL: {clone_url}",
+            f"Default branch: {default_branch}",
+            f"Required work branch prefix: {branch_prefix}",
             f"Required preview target: {preview_url}",
             "Required footer credit on every public preview page: desarrollado por: SitioUno Factory",
             "",
@@ -2191,18 +2372,21 @@ def openclaw_factory_project_request(
             "3. Treat every Kanban board as a derived visibility projection; do not hand-edit it as execution state.",
             "4. Use the workflow_run_id and matching work_order_id in every artifact, callback, branch report and observability log.",
             "5. Follow IDEA -> DISCOVERY -> PRODUCT_SHAPING -> ARCHITECTURE_REVIEW -> READY_FOR_SPRINT -> EXECUTION -> CODE_REVIEW -> QA_VALIDATION -> SECURITY_REVIEW -> ZEUS_ACCEPTANCE -> RELEASE -> RETROSPECTIVE -> MEMORY_UPDATE.",
-            "6. Create or identify the private GitHub repo named factory-su-<project-slug>.",
-            "7. Produce project docs/evidence: PRD, architecture brief, sprint plan, execution log, code review, QA report, Browser QA/Playwright report, security review, release handoff, retrospective, metrics.",
-            "8. Publish user-facing work to the KIDU Preview Lab unless Zeus/Jean explicitly says not to publish.",
-            "9. Record Notion human-readable evidence through Zeus or the approved writer.",
-            "10. Metrics must record started_at, completed_at, total duration, duration by state when available, engine attempts, QA result, Playwright result, re-gate count, and preview deploy time.",
-            "11. When the work is complete enough for Jean review, Zeus must send Jean an email completion report with status, preview URL, repo URL, Notion URL, duration, and next decision.",
-            "12. If any QA/security/release gate fails, mark REGATE_REQUIRED and do not present the work as accepted.",
-            "13. Report progress asynchronously; Zeus will inspect orchestration status, watchdog events and delegation status.",
-            "14. Leo Orquestador must orchestrate only: create role-owned work orders, route engines, record blockers, and assign the next owner.",
-            "15. Leo must not write or close specialist deliverables for Vera, Mia, Nico, Iris, Bruno, Tina, Belen, Sofia, Rene, or Dario.",
-            "16. Every successful stage must include the responsible owner, matching work_order_id, artifact paths, and gate result in FactoryRun.",
-            "17. Exit code 0 or a good narrative is not completion; success without owner evidence must be marked partial/blocked.",
+            "6. Zeus has already ensured the private GitHub repo before this delegation; do not create a competing repo unless Zeus records a blocker and changes the repo contract.",
+            "7. Use the node's configured GitHub credential (GH_TOKEN/GITHUB_TOKEN/gh auth) for clone, commit and push; never print, request, or store the token in artifacts, logs, Markdown, Notion, or chat.",
+            "8. Work in a branch under the required prefix and push every code-bearing deliverable to the repo.",
+            "9. Every coding/execution callback must include repo_url, branch, commit_sha, changed_files and artifact/log refs.",
+            "10. Produce project docs/evidence: PRD, architecture brief, sprint plan, execution log, code review, QA report, Browser QA/Playwright report, security review, release handoff, retrospective, metrics.",
+            "11. Publish user-facing work to the KIDU Preview Lab unless Zeus/Jean explicitly says not to publish.",
+            "12. Record Notion human-readable evidence through Zeus or the approved writer.",
+            "13. Metrics must record started_at, completed_at, total duration, duration by state when available, engine attempts, QA result, Playwright result, re-gate count, and preview deploy time.",
+            "14. When the work is complete enough for Jean review, Zeus must send Jean an email completion report with status, preview URL, repo URL, Notion URL, duration, and next decision.",
+            "15. If any QA/security/release gate fails, mark REGATE_REQUIRED and do not present the work as accepted.",
+            "16. Report progress asynchronously; Zeus will inspect orchestration status, watchdog events and delegation status.",
+            "17. Leo Orquestador must orchestrate only: create role-owned work orders, route engines, record blockers, and assign the next owner.",
+            "18. Leo must not write or close specialist deliverables for Vera, Mia, Nico, Iris, Bruno, Tina, Belen, Sofia, Rene, or Dario.",
+            "19. Every successful stage must include the responsible owner, matching work_order_id, artifact paths, and gate result in FactoryRun.",
+            "20. Exit code 0 or a good narrative is not completion; success without owner evidence must be marked partial/blocked.",
         ]
         if work_order_lines:
             lines.extend(["", "Canonical work orders:", *work_order_lines])
@@ -2215,6 +2399,7 @@ def openclaw_factory_project_request(
             "project_id": pid,
             "project_slug": slug,
             "repo_name": repo_name,
+            "repo_preflight": repo_preflight,
             "preview_url_expected": preview_url,
             "orchestration_request": orchestration_request,
             "zeus_kanban_task_id": f"zeus-{pid}",
@@ -2246,9 +2431,66 @@ def openclaw_factory_project_request(
     workflow_run_id = str(workflow_run.get("workflow_run_id") or "")
     sprint_id = str(sprint.get("sprint_id") or "sprint-001")
     work_orders = sprint.get("work_orders") if isinstance(sprint.get("work_orders"), list) else []
+    repo_preflight = _ensure_factory_github_repo(repo_name, title, slug)
+    if not repo_preflight.get("ok"):
+        intervention = None
+        if workflow_run_id:
+            intervention = _orchestration_api_request(
+                "POST",
+                f"/v1/workflow-runs/{quote(workflow_run_id)}/interventions",
+                payload={
+                    "actor": "zeus",
+                    "reason": (
+                        "GitHub repo preflight failed before Factory delegation: "
+                        f"{repo_preflight.get('error')}"
+                    ),
+                    "action": "blocked",
+                    "notes": (
+                        "The Factory workflow was created, but Sicilia delegation was "
+                        "refused because workers would not have a valid repository."
+                    ),
+                },
+                timeout_s=20.0,
+            )
+        zeus_kanban = _zeus_kanban_upsert(
+            task_id=f"zeus-{pid}",
+            title=f"Factory {title}",
+            body=(
+                f"Factory project {pid} is blocked before delegation. "
+                f"Expected repo: {repo_name}. GitHub preflight failed: "
+                f"{repo_preflight.get('error')}. Hermes workflow_run_id: {workflow_run_id}."
+            ),
+            status="blocked",
+            priority=1,
+            result={
+                "project_id": pid,
+                "repo_name": repo_name,
+                "canonical_factory_project": True,
+                "workflow_run_id": workflow_run_id,
+                "repo_preflight": repo_preflight,
+            },
+        )
+        return {
+            "ok": False,
+            "error": "GitHub repo preflight failed; refusing to delegate untracked Factory work",
+            "project_id": pid,
+            "project_slug": slug,
+            "repo_name": repo_name,
+            "repo_preflight": repo_preflight,
+            "canonical_state": "hermes_orchestration_core",
+            "workflow_run_id": workflow_run_id,
+            "sprint_id": sprint_id,
+            "orchestration": orchestration,
+            "zeus_kanban": zeus_kanban,
+            "intervention": intervention,
+        }
     task_spec = _task_spec(workflow_run_id or "unknown", sprint_id, work_orders)
     metadata = {
         **metadata,
+        "repo_preflight": repo_preflight,
+        "repo_url": repo_preflight.get("repo_url"),
+        "clone_url": repo_preflight.get("clone_url"),
+        "default_branch": repo_preflight.get("default_branch"),
         "workflow_run_id": workflow_run_id,
         "orchestration": {
             "api_url": _orchestration_base_url(),
@@ -2286,6 +2528,7 @@ def openclaw_factory_project_request(
             "project_id": pid,
             "branch": "sicilia",
             "repo_name": repo_name,
+            "repo_preflight": repo_preflight,
             "preview_url_expected": preview_url,
             "canonical_factory_project": True,
             "workflow_run_id": workflow_run_id,
@@ -2320,6 +2563,7 @@ def openclaw_factory_project_request(
         "project_id": pid,
         "project_slug": slug,
         "repo_name": repo_name,
+        "repo_preflight": repo_preflight,
         "preview_url_expected": preview_url,
         "canonical_state": "hermes_orchestration_core",
         "workflow_run_id": workflow_run_id,
